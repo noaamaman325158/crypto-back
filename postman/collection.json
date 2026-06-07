@@ -1,0 +1,207 @@
+{
+  "info": {
+    "name": "Crypto Dashboard API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/register",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"email\": \"demo@example.com\", \"password\": \"password123\"}" }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 201', () => pm.response.to.have.status(201));",
+              "pm.test('Has email', () => pm.expect(pm.response.json()).to.have.property('email'));"
+            ]}
+          }]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"email\": \"demo@example.com\", \"password\": \"password123\"}" }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const data = pm.response.json();",
+              "pm.test('Has access_token', () => pm.expect(data).to.have.property('access_token'));",
+              "pm.environment.set('jwt_token', data.access_token);"
+            ]}
+          }]
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/refresh",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"refresh_token\": \"{{refresh_token}}\"}" }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));"
+            ]}
+          }]
+        }
+      ]
+    },
+    {
+      "name": "Cryptocurrencies",
+      "item": [
+        {
+          "name": "Refresh from CoinGecko",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/refresh",
+            "header": [{ "key": "X-API-Key", "value": "{{internal_api_key}}" }]
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Has updated count', () => pm.expect(pm.response.json()).to.have.property('updated'));"
+            ]}
+          }]
+        },
+        {
+          "name": "List Cryptocurrencies",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/cryptocurrencies?page=1&per_page=20",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "cryptocurrencies"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "per_page", "value": "20" }
+              ]
+            }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const data = pm.response.json();",
+              "pm.test('Has data array', () => pm.expect(data.data).to.be.an('array'));",
+              "pm.test('Has pagination', () => { pm.expect(data).to.have.property('total'); pm.expect(data).to.have.property('page'); });",
+              "if (data.data.length > 0) pm.environment.set('coin_id', data.data[0].id);"
+            ]}
+          }]
+        },
+        {
+          "name": "Get Coin Detail",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/{{coin_id}}"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Has symbol', () => pm.expect(pm.response.json()).to.have.property('symbol'));"
+            ]}
+          }]
+        },
+        {
+          "name": "Price History (30d)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/bitcoin/history?days=30"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const data = pm.response.json();",
+              "pm.test('Has prices array', () => pm.expect(data.prices).to.be.an('array'));",
+              "pm.test('Prices have timestamp and price', () => { if (data.prices.length > 0) { pm.expect(data.prices[0]).to.have.property('timestamp'); pm.expect(data.prices[0]).to.have.property('price'); } });"
+            ]}
+          }]
+        },
+        {
+          "name": "AI Insight (requires auth + ANTHROPIC_API_KEY)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/bitcoin/insight",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }]
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "// Skip gracefully in CI when ANTHROPIC_API_KEY is not set (502 expected)",
+              "if (pm.response.code === 502) { console.log('AI insight skipped — no ANTHROPIC_API_KEY in CI'); return; }",
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Has insight text', () => pm.expect(pm.response.json()).to.have.property('insight'));"
+            ]}
+          }]
+        }
+      ]
+    },
+    {
+      "name": "Watchlist",
+      "item": [
+        {
+          "name": "Add to Watchlist",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/watchlist",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\"cryptocurrency_id\": \"{{coin_id}}\"}" }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 201', () => pm.response.to.have.status(201));",
+              "pm.test('Has cryptocurrency', () => pm.expect(pm.response.json()).to.have.property('cryptocurrency'));"
+            ]}
+          }]
+        },
+        {
+          "name": "Get Watchlist",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/watchlist",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }]
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Has items', () => pm.expect(pm.response.json()).to.have.property('items'));"
+            ]}
+          }]
+        },
+        {
+          "name": "Remove from Watchlist",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/watchlist/{{coin_id}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }]
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 204', () => pm.response.to.have.status(204));"
+            ]}
+          }]
+        }
+      ]
+    }
+  ]
+}

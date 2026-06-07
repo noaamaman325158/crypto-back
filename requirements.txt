@@ -1,0 +1,42 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# Validation & settings
+pydantic[email]==2.10.3
+pydantic-settings==2.6.1
+
+# HTTP client (CoinGecko)
+httpx==0.28.1
+
+# Cache
+redis[asyncio]==5.2.1
+
+# Rate limiting
+slowapi==0.1.9
+
+# AI
+anthropic==0.40.0
+
+# Utils
+python-dotenv==1.0.1
+python-multipart==0.0.20
+
+# Dev / CI
+ruff==0.8.4
+mypy==1.13.0
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+httpx==0.28.1
+pip-audit==2.7.3

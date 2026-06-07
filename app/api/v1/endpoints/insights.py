@@ -1,0 +1,36 @@
+from fastapi import APIRouter, Depends
+
+from app.api.v1.dependencies import get_current_user
+from app.core.exceptions import NotFoundError
+from app.models.user import User
+from app.schemas.cryptocurrency import InsightResponse
+from app.services.ai_insight_service import AIInsightService
+from app.services.crypto_service import CoinGeckoClient
+
+router = APIRouter(prefix="/cryptocurrencies", tags=["AI Insights"])
+
+
+@router.get("/{external_id}/insight", response_model=InsightResponse)
+async def get_coin_insight(
+    external_id: str,
+    _: User = Depends(get_current_user),
+):
+    """
+    Returns a Claude-generated 2-3 sentence trend analysis based on 30 days of price data.
+    Results are cached for 1 hour to minimize API cost.
+    """
+    client = CoinGeckoClient()
+    try:
+        raw = await client.fetch_history(external_id, days=30)
+    finally:
+        await client.aclose()
+
+    prices = [
+        {"timestamp": str(ts), "price": price}
+        for ts, price in raw.get("prices", [])
+    ]
+    if not prices:
+        raise NotFoundError(f"No price history available for '{external_id}'")
+
+    service = AIInsightService()
+    return await service.get_insight(coin_id=external_id, prices=prices)
