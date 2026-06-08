@@ -50,16 +50,10 @@ async def refresh_cryptocurrencies(
     return RefreshResponse(updated=count, message=f"Refreshed {count} cryptocurrencies from CoinGecko")
 
 
-@router.get("/{crypto_id}", response_model=CryptocurrencyResponse)
-@limiter.limit(LIMITS["coins_detail"])
-async def get_cryptocurrency(
-    request: Request,
-    crypto_id: uuid.UUID,
-    service: CryptoService = Depends(get_crypto_service),
-):
-    return await service.get_by_id(crypto_id)
-
-
+# IMPORTANT: /{external_id}/history MUST be registered before /{crypto_id}.
+# FastAPI matches routes top-to-bottom. If /{crypto_id} (UUID) comes first,
+# a request to /bitcoin/history would try to parse "bitcoin" as a UUID → 422.
+# Specific sub-paths must always precede generic wildcard routes.
 @router.get("/{external_id}/history", response_model=HistoryResponse)
 @limiter.limit(LIMITS["coins_history"])
 async def get_price_history(
@@ -69,3 +63,13 @@ async def get_price_history(
     service: CryptoService = Depends(get_crypto_service),
 ):
     return await service.get_history(external_id=external_id, days=days)
+
+
+@router.get("/{crypto_id}", response_model=CryptocurrencyResponse)
+@limiter.limit(LIMITS["coins_detail"])
+async def get_cryptocurrency(
+    request: Request,
+    crypto_id: uuid.UUID,
+    service: CryptoService = Depends(get_crypto_service),
+):
+    return await service.get_by_id(crypto_id)
