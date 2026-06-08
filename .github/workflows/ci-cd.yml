@@ -108,7 +108,7 @@ jobs:
         ports:
           - 4566:4566
         env:
-          SERVICES: ssm,ecr,ecs,iam,logs,s3,elbv2,rds,elasticache
+          SERVICES: ssm,ecr,ecs,iam,logs,s3,elbv2,rds,elasticache,sts,ec2
           DEFAULT_REGION: us-east-1
           DEBUG: 0
         options: >-
