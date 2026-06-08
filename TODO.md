@@ -416,6 +416,202 @@
     > process restarts and can be scheduled automatically — but FastAPI BackgroundTasks
     > is the right starting point before you have that operational overhead."
 
+- [ ] **Database Optimization — Indexes & Query-Driven Schema Design**
+  - **The problem**: defining fields in SQLAlchemy ORM is not enough. A senior engineer
+    thinks about the actual queries that will run, and adds indexes that match the
+    data access patterns — not as an afterthought, but at design time.
+
+  - **Current state**: basic indexes exist on `users.email`, `cryptocurrencies.external_id`,
+    `cryptocurrencies.symbol`. ✅ Missing: compound indexes for the actual query patterns.
+
+  - **Query-driven index analysis**:
+
+    | Endpoint | Query pattern | Required index |
+    |---|---|---|
+    | `GET /cryptocurrencies/:id/history` | `WHERE cryptocurrency_id = ? ORDER BY timestamp DESC` | Compound: `(cryptocurrency_id, timestamp DESC)` |
+    | `GET /watchlist` | `WHERE user_id = ? ORDER BY added_at DESC` | Compound: `(user_id, added_at DESC)` |
+    | `POST /auth/login` | `WHERE email = ?` | Single: `email` ✅ already exists |
+    | `GET /cryptocurrencies?sort_by=market_cap_rank` | `ORDER BY market_cap_rank` | Single: `market_cap_rank` |
+    | `GET /cryptocurrencies?sort_by=current_price` | `ORDER BY current_price` | Single: `current_price` |
+
+  - **PriceHistory table — currently missing entirely**:
+    ```python
+    # The history endpoint currently fetches from CoinGecko every time.
+    # A proper implementation stores price history in DB for offline access,
+    # faster queries, and historical analysis beyond CoinGecko's free tier limits.
+
+    class PriceHistory(Base):
+        __tablename__ = "price_history"
+        __table_args__ = (
+            # Compound index — the most critical query is:
+            # SELECT * FROM price_history
+            # WHERE cryptocurrency_id = ? AND timestamp >= ?
+            # ORDER BY timestamp DESC
+            # Without this index: full table scan on millions of rows = API timeout
+            Index("ix_price_history_coin_time",
+                  "cryptocurrency_id", "timestamp",
+                  postgresql_ops={"timestamp": "DESC"}),
+            UniqueConstraint("cryptocurrency_id", "timestamp",
+                             name="uq_price_history_coin_time"),
+        )
+        id:                uuid
+        cryptocurrency_id: FK → cryptocurrencies.id
+        timestamp:         DateTime (indexed)
+        price:             Float
+        volume_24h:        Float (nullable)
+        market_cap:        Float (nullable)
+    ```
+
+  - **EXPLAIN ANALYZE — verify indexes are used**:
+    ```sql
+    -- Run this after adding indexes to confirm query plan uses index scan
+    EXPLAIN ANALYZE
+    SELECT * FROM price_history
+    WHERE cryptocurrency_id = '...'
+    ORDER BY timestamp DESC
+    LIMIT 100;
+    -- Should show: "Index Scan using ix_price_history_coin_time"
+    -- NOT: "Seq Scan" (full table scan = missing index)
+    ```
+
+  - **Watchlist compound index** — already has `UniqueConstraint("user_id", "cryptocurrency_id")`
+    which PostgreSQL backs with an implicit B-tree index. ✅ But `ORDER BY added_at DESC`
+    needs an additional index if the watchlist grows large:
+    ```python
+    Index("ix_watchlist_user_time", "user_id", "added_at",
+          postgresql_ops={"added_at": "DESC"})
+    ```
+
+  - **TimescaleDB upgrade path** (mention in video):
+    > "For millions of price history rows, TimescaleDB turns this into a hypertable
+    > with automatic time-based partitioning — the compound index + partitioning
+    > together gives sub-10ms queries on billions of rows. That's the production
+    > upgrade path from Postgres, with zero application code changes."
+
+  - **Implementation steps**:
+    - [ ] New Alembic migration: `PriceHistory` table with compound index
+    - [ ] Compound index on `watchlist(user_id, added_at DESC)`
+    - [ ] Single indexes on `cryptocurrencies.market_cap_rank` and `current_price`
+    - [ ] Update `crypto_service.py` history method to read from DB first, fall back to CoinGecko
+    - [ ] Seed script: populate `price_history` during `/refresh`
+    - [ ] Add `EXPLAIN ANALYZE` test in README showing index scan vs seq scan
+    - [ ] Comment in migration explaining WHY each index exists (query it serves)
+
+- [ ] **Thundering Herd / Cache Stampede Prevention**
+  - **The problem**: when a popular cache key expires (e.g. coin list TTL = 60s),
+    all concurrent requests simultaneously get a cache miss and all race to fetch
+    from DB/CoinGecko. With 1,000 concurrent users, that's 1,000 simultaneous
+    CoinGecko API calls — which hits the rate limit, crashes the external API,
+    and likely 429s your entire service.
+
+  - **Current state**: basic cache-aside exists (get → miss → fetch → set). ❌ No stampede protection.
+
+  - **Three strategies** (layered — implement all three for full protection):
+
+    **Strategy 1 — Redis mutex (distributed lock)**
+    ```python
+    # Only the FIRST cache-missing request fetches. All others wait.
+    # app/core/cache.py
+
+    async def get_or_fetch_with_lock(key: str, fetch_fn, ttl: int):
+        cached = await cache_get(key)
+        if cached:
+            return cached
+
+        lock_key = f"lock:{key}"
+        r = await get_redis()
+
+        # Try to acquire lock (NX = only set if not exists, EX = expire in 5s)
+        acquired = await r.set(lock_key, "1", nx=True, ex=5)
+
+        if acquired:
+            try:
+                value = await fetch_fn()
+                await cache_set(key, value, ttl=ttl)
+                return value
+            finally:
+                await r.delete(lock_key)
+        else:
+            # Another request is fetching — wait briefly and return from cache
+            for _ in range(10):
+                await asyncio.sleep(0.1)
+                cached = await cache_get(key)
+                if cached:
+                    return cached
+            # Fallback: fetch directly (lock expired but cache still empty)
+            return await fetch_fn()
+    ```
+
+    **Strategy 2 — Probabilistic early expiration (XFetch algorithm)**
+    ```python
+    # Instead of expiring at exactly TTL seconds, expire randomly BEFORE TTL
+    # so different requests trigger refresh at different times — no stampede.
+    # Probability of early refresh increases as TTL approaches.
+
+    import math, random
+
+    async def cache_get_xfetch(key: str, fetch_fn, ttl: int, beta: float = 1.0):
+        r = await get_redis()
+        data = await r.get(key)
+        if data:
+            item = json.loads(data)
+            remaining_ttl = await r.ttl(key)
+            # Early recompute if: -beta * delta * log(random()) > remaining_ttl
+            delta = item.get("_fetch_duration", 0.1)
+            if -beta * delta * math.log(random.random()) > remaining_ttl:
+                # Proactively refresh before expiry (only this one request does it)
+                value = await fetch_fn()
+                await cache_set(key, value, ttl=ttl)
+                return value
+            return item["value"]
+        # Cache miss — fetch normally
+        value = await fetch_fn()
+        await cache_set(key, {"value": value, "_fetch_duration": ...}, ttl=ttl)
+        return value
+    ```
+
+    **Strategy 3 — Background refresh (proactive, never expires for users)**
+    ```python
+    # A background task refreshes the cache BEFORE it expires.
+    # Users always read from cache — they never experience a miss.
+    # Triggered by: APScheduler / asyncio.create_task on app startup
+
+    # app/core/background_refresh.py
+    async def schedule_coin_cache_refresh():
+        while True:
+            await asyncio.sleep(55)  # refresh every 55s, TTL is 60s
+            try:
+                coins = await fetch_from_db()
+                await cache_set("coins:list:1:50:market_cap_rank", coins, ttl=60)
+                logger.info("proactive cache refresh complete")
+            except Exception as e:
+                logger.warning("proactive cache refresh failed", error=str(e))
+    # Coin data is always warm — no user ever triggers a cache miss
+    ```
+
+  - **Which to implement**:
+    - Strategy 1 (mutex) → for coin detail and history (low-traffic, correct)
+    - Strategy 3 (background refresh) → for coin list (high-traffic, most impactful)
+    - Strategy 2 (XFetch) → mention in documentation/video as the academic gold standard
+
+  - **Implementation steps**:
+    - [ ] `app/core/cache.py` — add `get_or_fetch_with_lock()` using Redis `SET NX`
+    - [ ] `app/core/background_refresh.py` — proactive refresh task for coin list
+    - [ ] Wire background refresh into `app/main.py` lifespan (alongside gRPC server)
+    - [ ] Replace cache-aside in `crypto_service.get_all()` with `get_or_fetch_with_lock()`
+    - [ ] Unit tests: concurrent calls with mocked Redis → only one fetch call executes
+    - [ ] k6 test: 1000 concurrent VUs hitting `/cryptocurrencies` at cache expiry moment
+          → verify CoinGecko mock called exactly once, not 1000 times
+    - [ ] Add `cache_stampede_prevented` counter metric
+
+  - **Why this matters (mention in video)**:
+    > "Cache stampede is the failure mode that takes down services at exactly the
+    > wrong moment — when you have peak traffic. The Redis mutex pattern ensures
+    > only one request races to the DB. The background refresh eliminates the
+    > problem entirely for high-traffic endpoints: users never see a cache miss
+    > because the cache is always being proactively warmed. Together, these patterns
+    > are what separate a cache that works in demos from one that works at scale."
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
