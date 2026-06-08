@@ -76,9 +76,14 @@ jobs:
       - name: Verify requirements.lock is up to date with requirements.txt
         run: |
           pip-compile requirements.txt --output-file=requirements.lock.check --quiet
-          diff requirements.lock requirements.lock.check || \
+          # Strip comment lines (start with #) before diffing — pip-compile regenerates
+          # header comments with the output filename, causing false positives.
+          # We only care that actual pinned versions are identical.
+          grep -v '^#' requirements.lock      > requirements.lock.stripped
+          grep -v '^#' requirements.lock.check > requirements.lock.check.stripped
+          diff requirements.lock.stripped requirements.lock.check.stripped || \
             (echo "requirements.lock is out of sync. Run: pip-compile requirements.txt --output-file=requirements.lock" && exit 1)
-          rm requirements.lock.check
+          rm requirements.lock.check requirements.lock.stripped requirements.lock.check.stripped
 
   sca:
     name: SCA — Dependency CVEs (pip-audit)
