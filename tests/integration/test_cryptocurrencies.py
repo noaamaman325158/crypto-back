@@ -162,17 +162,16 @@ async def test_price_history(client: AsyncClient):
         return_value=MOCK_HISTORY,
     ):
         resp = await client.get(f"/api/v1/cryptocurrencies/{external_id}/history?days=7")
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["coin_id"] == external_id
-    assert data["days"] == 7
-    assert isinstance(data["prices"], list)
-    assert len(data["prices"]) == 3
-    # Each price point has timestamp and price
-    assert "timestamp" in data["prices"][0]
-    assert "price" in data["prices"][0]
-    assert data["prices"][0]["price"] == 45000.0
+        # Assertions inside the patch context — mock must be active during request
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["coin_id"] == external_id
+        assert data["days"] == 7
+        assert isinstance(data["prices"], list)
+        assert len(data["prices"]) == 3
+        assert "timestamp" in data["prices"][0]
+        assert "price" in data["prices"][0]
+        assert data["prices"][0]["price"] == 45000.0
 
 
 @pytest.mark.asyncio

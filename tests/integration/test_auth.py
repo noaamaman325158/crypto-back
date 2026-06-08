@@ -73,8 +73,10 @@ async def test_refresh_token(client: AsyncClient):
     data = resp.json()
     assert "access_token" in data
     assert "refresh_token" in data
-    # New refresh token should be rotated (different from old one)
-    assert data["refresh_token"] != refresh_token
+    assert data["token_type"] == "bearer"
+    # The old refresh token must now be invalid (revoked in DB after rotation)
+    resp2 = await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert resp2.status_code == 401
 
 
 @pytest.mark.asyncio

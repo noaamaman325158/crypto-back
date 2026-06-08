@@ -41,12 +41,17 @@ async def client(db_session: AsyncSession):
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    with patch("app.core.cache.get_redis", return_value=AsyncMock(
-        get=AsyncMock(return_value=None),
-        setex=AsyncMock(),
-        delete=AsyncMock(),
-        keys=AsyncMock(return_value=[]),
-    )):
+
+    # Disable rate limiting in tests — tests share the same IP (127.0.0.1)
+    # so the tight limits (e.g. 5/min on /refresh) fire across test functions
+    # and cause unrelated tests to fail with 429.
+    with patch("app.core.rate_limit.limiter.enabled", False), \
+         patch("app.core.cache.get_redis", return_value=AsyncMock(
+             get=AsyncMock(return_value=None),
+             setex=AsyncMock(),
+             delete=AsyncMock(),
+             keys=AsyncMock(return_value=[]),
+         )):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
