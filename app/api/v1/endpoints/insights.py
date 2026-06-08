@@ -26,13 +26,12 @@ async def get_coin_insight(
     client = CoinGeckoClient()
     try:
         raw = await client.fetch_history(external_id, days=30)
+        prices = [
+            {"timestamp": str(ts), "price": price}
+            for ts, price in raw.get("prices", [])
+        ]
     finally:
         await client.aclose()
-
-    prices = [
-        {"timestamp": str(ts), "price": price}
-        for ts, price in raw.get("prices", [])
-    ]
     if not prices:
         raise NotFoundError(f"No price history available for '{external_id}'")
 
