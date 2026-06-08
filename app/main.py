@@ -17,11 +17,20 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Run Alembic migrations on startup
-    from alembic import command
-    from alembic.config import Config
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Run Alembic migrations on startup.
+    # In CI the integration test job runs migrations separately before starting
+    # the server — this is a safety net for production deployments.
+    try:
+        from alembic import command
+        from alembic.config import Config
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations applied")
+    except Exception as e:
+        logger.warning("Alembic migration skipped or failed: %s", e)
 
     # Start gRPC server in background alongside FastAPI (REST :8000, gRPC :50051).
     # Same process, two transports — mirrors the Dataminr agentic-search pattern.

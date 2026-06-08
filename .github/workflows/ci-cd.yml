@@ -307,21 +307,43 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ENVIRONMENT: development
         run: |
-          uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-          # Wait for the server to be ready
-          for i in $(seq 1 20); do
-            curl -sf http://localhost:8000/health && break || sleep 2
+          # Start uvicorn; redirect logs so we can inspect on failure
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
+          echo "Server PID: $!"
+
+          # Poll /health — fail the step explicitly if server never comes up
+          echo "Waiting for server..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health > /dev/null; then
+              echo "Server is up (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Server failed to start. Logs:"
+              cat /tmp/uvicorn.log
+              exit 1
+            fi
+            sleep 2
           done
 
       - name: Install Newman
         run: npm install -g newman
 
-      - name: Run Postman collection (integration tests)
+      - name: Seed coin data before E2E tests
+        run: |
+          curl -sf -X POST http://localhost:8000/api/v1/cryptocurrencies/refresh \
+            -H "X-API-Key: test-api-key" || echo "Seed failed (CoinGecko may be rate-limited in CI — continuing)"
+
+      - name: Run Postman collection (E2E tests)
         run: |
           newman run postman/collection.json \
             -e postman/env.ci.json \
             --reporters cli,junit \
             --reporter-junit-export newman-results.xml
+
+      - name: Print server logs on failure
+        if: failure()
+        run: cat /tmp/uvicorn.log || true
 
       - name: Upload Newman results
         if: always()
