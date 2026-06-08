@@ -1,4 +1,5 @@
 import uuid
+from typing import cast
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +22,8 @@ async def get_watchlist(
 ):
     repo = WatchlistRepository(db)
     items = await repo.get_user_watchlist(current_user.id)
-    return WatchlistResponse(items=items, total=len(items))
+    # FastAPI serializes ORM objects via from_attributes; cast satisfies mypy
+    return WatchlistResponse(items=cast(list[WatchlistItemResponse], items), total=len(items))
 
 
 @router.post("", response_model=WatchlistItemResponse, status_code=201)

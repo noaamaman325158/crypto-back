@@ -23,7 +23,7 @@ class CryptoRepository:
         result = await self.db.execute(
             select(Cryptocurrency).order_by(order_col).offset(offset).limit(per_page)
         )
-        return result.scalars().all(), total
+        return list(result.scalars().all()), total
 
     async def get_by_id(self, crypto_id: uuid.UUID) -> Cryptocurrency | None:
         result = await self.db.execute(

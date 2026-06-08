@@ -28,7 +28,8 @@ async def test_watchlist_full_flow(client: AsyncClient):
         new_callable=AsyncMock,
         return_value=MOCK_MARKETS,
     ):
-        await client.post("/api/v1/cryptocurrencies/refresh", headers={"X-API-Key": "dev-internal-key"})
+        from app.config import settings
+        await client.post("/api/v1/cryptocurrencies/refresh", headers={"X-API-Key": settings.internal_api_key})
 
     # Get coin id
     coins_resp = await client.get("/api/v1/cryptocurrencies")

@@ -18,7 +18,7 @@ class WatchlistRepository:
             .options(selectinload(WatchlistItem.cryptocurrency))
             .order_by(WatchlistItem.added_at.desc())
         )
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def get_item(
         self, user_id: uuid.UUID, cryptocurrency_id: uuid.UUID

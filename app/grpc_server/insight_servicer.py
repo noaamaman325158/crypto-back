@@ -14,11 +14,11 @@ class InsightServicer(insight_pb2_grpc.InsightServiceServicer):
     Dataminr agentic-search architecture: one service, two transports.
     """
 
-    async def GetInsight(
+    async def GetInsight(  # type: ignore[override]
         self,
-        request: insight_pb2.GetInsightRequest,
+        request: insight_pb2.GetInsightRequest,  # type: ignore[name-defined]
         context: grpc.aio.ServicerContext,
-    ) -> insight_pb2.GetInsightResponse:
+    ) -> insight_pb2.GetInsightResponse:  # type: ignore[name-defined]
         coin_id = request.coin_id
         days = request.days or 30
 
@@ -47,7 +47,7 @@ class InsightServicer(insight_pb2_grpc.InsightServiceServicer):
         service = AIInsightService()
         result = await service.get_insight(coin_id=coin_id, prices=prices)
 
-        return insight_pb2.GetInsightResponse(
+        return insight_pb2.GetInsightResponse(  # type: ignore[attr-defined]
             coin_id=result.coin_id,
             insight=result.insight,
             generated_at=result.generated_at.isoformat(),

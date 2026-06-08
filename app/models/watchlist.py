@@ -1,10 +1,17 @@
+from __future__ import annotations
+
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
+
+if TYPE_CHECKING:
+    from app.models.cryptocurrency import Cryptocurrency
+    from app.models.user import User
 
 
 class WatchlistItem(Base):
@@ -20,7 +27,7 @@ class WatchlistItem(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    user: Mapped["User"] = relationship("User", back_populates="watchlist")  # noqa: F821
-    cryptocurrency: Mapped["Cryptocurrency"] = relationship(  # noqa: F821
+    user: Mapped[User] = relationship("User", back_populates="watchlist")  # noqa: F821
+    cryptocurrency: Mapped[Cryptocurrency] = relationship(  # noqa: F821
         "Cryptocurrency", back_populates="watchlist_items"
     )

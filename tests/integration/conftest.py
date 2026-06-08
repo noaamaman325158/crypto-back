@@ -1,7 +1,5 @@
-import asyncio
 from unittest.mock import AsyncMock, patch
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -11,31 +9,30 @@ from app.main import app
 
 TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/crypto_test"
 
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-TestSession = async_sessionmaker(test_engine, expire_on_commit=False)
 
-
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest_asyncio.fixture(scope="session", autouse=True)
+# pytest-asyncio >=1.0 requires explicit loop scope on session-scoped fixtures.
+# Use "function" scope throughout to avoid asyncpg "attached to a different loop"
+# errors that occur when a session-scoped engine connection is reused across
+# function-scoped async fixtures running on different event loops.
+@pytest_asyncio.fixture(scope="function", autouse=True)
 async def setup_db():
-    async with test_engine.begin() as conn:
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
-    async with test_engine.begin() as conn:
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture
-async def db_session():
+async def db_session(setup_db):
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    TestSession = async_sessionmaker(engine, expire_on_commit=False)
     async with TestSession() as session:
         yield session
         await session.rollback()
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture

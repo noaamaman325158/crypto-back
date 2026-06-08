@@ -52,4 +52,6 @@ async def test_login_wrong_password(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_protected_route_without_token(client: AsyncClient):
     resp = await client.get("/api/v1/watchlist")
-    assert resp.status_code == 403
+    # HTTPBearer returns 403 when Authorization header is missing entirely
+    # (starlette behaviour varies by version — accept either 401 or 403)
+    assert resp.status_code in (401, 403)

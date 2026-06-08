@@ -48,9 +48,10 @@ async def test_refresh_and_list(client: AsyncClient):
         new_callable=AsyncMock,
         return_value=MOCK_COINGECKO_MARKETS,
     ):
+        from app.config import settings
         resp = await client.post(
             "/api/v1/cryptocurrencies/refresh",
-            headers={"X-API-Key": "dev-internal-key"},
+            headers={"X-API-Key": settings.internal_api_key},
         )
         assert resp.status_code == 200
         assert resp.json()["updated"] > 0
