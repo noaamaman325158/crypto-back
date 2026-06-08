@@ -36,6 +36,42 @@
     └── watchlist_repo.py    ← SQLAlchemyWatchlistRepository(BaseRepository[WatchlistItem])
     ```
 
+- [ ] **Circuit Breaker + Graceful Degradation**
+  - **Where it applies** — two external dependencies that can fail independently:
+    1. **CoinGecko API** — rate-limited, can go down, can be slow
+    2. **Anthropic Claude API** — can be unavailable, expensive, has its own rate limits
+  - **Circuit Breaker pattern** (using `pybreaker` or custom implementation):
+    - States: CLOSED (normal) → OPEN (failing, reject fast) → HALF-OPEN (probe recovery)
+    - Thresholds: open after 5 consecutive failures, probe after 60s
+    - Prevents cascading failures — if CoinGecko is down, don't keep hammering it
+    - Expose circuit state as a metric (`crypto_circuit_state{service="coingecko"}`)
+    - Design:
+      ```
+      app/core/circuit_breaker.py   ← CircuitBreaker class with CLOSED/OPEN/HALF_OPEN states
+      app/services/crypto_service.py ← wrap CoinGeckoClient calls with circuit breaker
+      app/services/ai_insight_service.py ← wrap Claude API calls with circuit breaker
+      ```
+  - **Graceful Degradation** — what the API returns when the circuit is OPEN:
+    - `GET /cryptocurrencies` — serve stale data from Redis cache (even if TTL expired)
+      instead of returning 502. Add `X-Data-Freshness: stale` response header.
+    - `GET /cryptocurrencies/:id/history` — return cached history if available,
+      otherwise 503 with `Retry-After` header.
+    - `GET /cryptocurrencies/:id/insight` — return cached insight if available,
+      otherwise return a canned message: `{"insight": "AI analysis temporarily unavailable",
+      "cached": false, "degraded": true}` instead of 502.
+    - `POST /cryptocurrencies/refresh` — return 503 with circuit state in body
+      instead of letting the request hang until timeout.
+  - **Implementation steps**:
+    - [ ] `app/core/circuit_breaker.py` — async-safe CircuitBreaker with configurable
+          failure threshold, recovery timeout, and state change callbacks
+    - [ ] Wire into `CoinGeckoClient` — all `fetch_*` methods go through the breaker
+    - [ ] Wire into `AIInsightService` — Claude API call goes through a separate breaker
+    - [ ] `app/services/crypto_service.py` — add stale-cache fallback when circuit is OPEN
+    - [ ] `app/services/ai_insight_service.py` — add degraded response fallback
+    - [ ] Expose circuit state at `GET /health/details` (not public `/health` — internal only)
+    - [ ] Unit tests for all 3 states: CLOSED → OPEN → HALF_OPEN → CLOSED
+    - [ ] Add circuit state to Prometheus metrics
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
