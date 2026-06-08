@@ -612,6 +612,98 @@
     > because the cache is always being proactively warmed. Together, these patterns
     > are what separate a cache that works in demos from one that works at scale."
 
+- [ ] **Security: Least Privilege & Data Exposure — DTO / Response Model Discipline**
+  - **The problem**: junior developers do `return user` directly from the DB object.
+    SQLAlchemy models contain every column — including `hashed_password`,
+    `refresh_token`, and internal fields. If the serialiser touches them, they leak.
+
+  - **Current state**: Pydantic response models (`UserResponse`) are defined and used
+    as `response_model=` on endpoints. ✅ FastAPI filters output through them.
+    BUT: the models need explicit audit to ensure no sensitive field is reachable.
+
+  - **The DTO separation pattern**:
+    ```python
+    # Three distinct Pydantic models — never collapse them into one:
+
+    class UserCreate(BaseModel):
+        """What the CLIENT sends on register. Input only."""
+        email: EmailStr
+        password: str          # plaintext — never stored, never returned
+
+    class UserInDB(BaseModel):
+        """Internal representation — ORM → service layer only. Never serialised."""
+        id: UUID
+        email: str
+        hashed_password: str   # ← exists here, NEVER in UserResponse
+        refresh_token: str | None
+        role: str
+        created_at: datetime
+        model_config = {"from_attributes": True}
+
+    class UserResponse(BaseModel):
+        """What the API returns to the CLIENT. Explicit allowlist — not blocklist."""
+        id: UUID
+        email: str
+        role: str
+        created_at: datetime
+        # hashed_password: ABSENT — can never leak even if ORM adds new columns
+        # refresh_token:   ABSENT
+        # refresh_token is a JWT secret — leaking it = full account takeover
+    ```
+
+  - **Why explicit allowlist beats blocklist**:
+    If you add a new DB column tomorrow (e.g. `stripe_customer_id`, `internal_notes`),
+    an allowlist response model silently excludes it. A blocklist requires you to
+    remember to add it to the exclusion list — a failure mode that has caused real
+    data breaches.
+
+  - **Fields that must NEVER appear in any API response**:
+    | Field | Risk if leaked |
+    |---|---|
+    | `hashed_password` | Offline brute-force attack |
+    | `refresh_token` | Full account takeover (token reuse) |
+    | `stripe_customer_id` | PII, billing account enumeration |
+    | SQLAlchemy internal state (`_sa_instance_state`) | Internal error if serialised |
+
+  - **Audit the full response surface**:
+    ```python
+    # Test pattern: assert sensitive fields are ABSENT, not just that response is 200
+    def test_register_never_leaks_sensitive_fields(client):
+        resp = client.post("/auth/register", json={...})
+        body = resp.json()
+        assert "hashed_password" not in body
+        assert "refresh_token" not in body
+        # Exhaustive: check every field in body is in the explicit allowlist
+        allowed = {"id", "email", "role", "created_at"}
+        assert set(body.keys()) == allowed
+    ```
+
+  - **Extend to all models**:
+    | Model | Must NOT appear in response |
+    |---|---|
+    | `User` | `hashed_password`, `refresh_token` |
+    | `WatchlistItem` | `user_id` (internal FK — client knows who they are) |
+    | `Cryptocurrency` | `id` (UUID) is fine, but internal `created_at` is noise |
+
+  - **Implementation steps**:
+    - [ ] Audit every `response_model=` to verify it uses an explicit allowlist schema
+    - [ ] Add `UserInDB` as an internal-only model (never used as `response_model`)
+    - [ ] Integration test: assert `hashed_password` and `refresh_token` are absent
+          from register, login, and profile endpoints — not just that status is 200
+    - [ ] Add `model_config = {"from_attributes": True}` to all response schemas
+          that are constructed from ORM objects (prevents accidental field bleed)
+    - [ ] Swagger: response schemas should only show the fields users should see —
+          internal models never appear in the OpenAPI spec
+
+  - **Why this matters (mention in video)**:
+    > "A junior returns the ORM object and hopes FastAPI filters it correctly.
+    > A senior defines three distinct models: what comes IN, what lives IN the DB,
+    > and what goes OUT — and they are never the same class.
+    > The response model is an explicit allowlist: if a field isn't listed, it
+    > physically cannot appear in the response, regardless of what the ORM returns.
+    > This is the principle of least privilege applied to data: expose only what
+    > the client needs to do its job, nothing more."
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
