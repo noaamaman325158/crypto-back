@@ -1,11 +1,12 @@
 import uuid
 from typing import cast
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.exceptions import ConflictError, NotFoundError
+from app.core.rate_limit import LIMITS, limiter
 from app.db.database import get_db
 from app.models.user import User
 from app.repositories.crypto_repo import CryptoRepository
@@ -16,18 +17,21 @@ router = APIRouter(prefix="/watchlist", tags=["Watchlist"])
 
 
 @router.get("", response_model=WatchlistResponse)
+@limiter.limit(LIMITS["watchlist_read"])
 async def get_watchlist(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     repo = WatchlistRepository(db)
     items = await repo.get_user_watchlist(current_user.id)
-    # FastAPI serializes ORM objects via from_attributes; cast satisfies mypy
     return WatchlistResponse(items=cast(list[WatchlistItemResponse], items), total=len(items))
 
 
 @router.post("", response_model=WatchlistItemResponse, status_code=201)
+@limiter.limit(LIMITS["watchlist_write"])
 async def add_to_watchlist(
+    request: Request,
     body: WatchlistAddRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -47,7 +51,9 @@ async def add_to_watchlist(
 
 
 @router.delete("/{cryptocurrency_id}", status_code=204)
+@limiter.limit(LIMITS["watchlist_write"])
 async def remove_from_watchlist(
+    request: Request,
     cryptocurrency_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

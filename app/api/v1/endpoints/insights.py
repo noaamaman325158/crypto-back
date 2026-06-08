@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from app.api.v1.dependencies import get_current_user
 from app.core.exceptions import NotFoundError
+from app.core.rate_limit import LIMITS, limiter
 from app.models.user import User
 from app.schemas.cryptocurrency import InsightResponse
 from app.services.ai_insight_service import AIInsightService
@@ -11,13 +12,16 @@ router = APIRouter(prefix="/cryptocurrencies", tags=["AI Insights"])
 
 
 @router.get("/{external_id}/insight", response_model=InsightResponse)
+@limiter.limit(LIMITS["coins_insight"])
 async def get_coin_insight(
+    request: Request,
     external_id: str,
     _: User = Depends(get_current_user),
 ):
     """
     Returns a Claude-generated 2-3 sentence trend analysis based on 30 days of price data.
     Results are cached for 1 hour to minimize API cost.
+    Rate limited to 10/minute — each uncached call invokes the Claude API.
     """
     client = CoinGeckoClient()
     try:
