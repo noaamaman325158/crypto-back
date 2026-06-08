@@ -47,7 +47,8 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"
+      - "8000:8000"   # REST (FastAPI)
+      - "50051:50051" # gRPC (InsightService)
     env_file:
       - .env
     environment:

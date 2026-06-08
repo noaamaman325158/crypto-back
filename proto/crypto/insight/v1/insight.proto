@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package crypto.insight.v1;
+
+option py_generic_services = false;
+
+// InsightService generates AI-powered price trend analysis for cryptocurrencies.
+//
+// Dual-protocol pattern: this service is exposed via both:
+//   gRPC  — port 50051 (this file)
+//   REST  — port 8000  (FastAPI /api/v1/cryptocurrencies/{coin_id}/insight)
+//
+// Both transports share identical business logic. This mirrors the Dataminr
+// agentic-search architecture: one service, two transports, zero duplication.
+//
+// HTTP mapping (informational — REST is handled by FastAPI, not grpc-gateway):
+//   GET /api/v1/cryptocurrencies/{coin_id}/insight
+service InsightService {
+  rpc GetInsight(GetInsightRequest) returns (GetInsightResponse);
+}
+
+message GetInsightRequest {
+  // CoinGecko external ID, e.g. "bitcoin", "ethereum"
+  string coin_id = 1;
+
+  // Number of days of price history to analyze (7, 30, or 90)
+  int32 days = 2;
+}
+
+message GetInsightResponse {
+  string coin_id = 1;
+
+  // 2-3 sentence AI-generated trend analysis
+  string insight = 2;
+
+  // ISO 8601 timestamp of when the insight was generated
+  string generated_at = 3;
+
+  // True if the response was served from cache
+  bool cached = 4;
+}

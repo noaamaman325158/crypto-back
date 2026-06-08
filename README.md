@@ -4,13 +4,16 @@ A production-grade cryptocurrency dashboard backend built with **FastAPI**, **Po
 
 ## Architecture Highlights
 
+> **Dual-protocol AI endpoint** — The `/insight` service is exposed over both REST (port 8000) and gRPC (port 50051) from the same process. This mirrors the pattern used in Dataminr's AI services (e.g. `agentic-search`): one service, two transports, zero logic duplication. gRPC server reflection is enabled so clients can introspect available methods at runtime without a `.proto` file.
+
 - **Async-first**: SQLAlchemy 2.0 async, asyncpg, httpx — no blocking I/O
 - **Layered architecture**: Router → Service → Repository — each layer has one responsibility
 - **Auth**: JWT (user-facing) + API Keys (service-to-service) + RBAC roles
 - **Caching**: Redis cache-aside pattern for coin data (60s TTL) and AI insights (1h TTL)
 - **IaC**: Full Terraform on AWS (ECS Fargate + RDS + ElastiCache)
-- **CI/CD**: GitHub Actions hardened against supply chain attacks (SHA-pinned actions, OIDC to AWS)
+- **CI/CD**: GitHub Actions with 5-layer security gates — poutine (pipeline SAST), TruffleHog (secrets), Semgrep (SAST), pip-audit (SCA), Terraform + LocalStack (IaC) — all before any build runs
 - **AI**: Claude API analyzes 30-day price history and returns trend insights
+- **Dual-protocol**: REST (`:8000`) + gRPC (`:50051`) served from one process — same business logic, two transports
 
 ## Tech Stack
 
@@ -114,6 +117,31 @@ curl http://localhost:8000/api/v1/cryptocurrencies/bitcoin/insight \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+## gRPC API
+
+The AI insight endpoint is also available over gRPC on port `50051`.
+
+Server reflection is enabled — use `grpcurl` without a `.proto` file:
+
+```bash
+# Discover available services
+grpcurl -plaintext localhost:50051 list
+
+# Describe the InsightService
+grpcurl -plaintext localhost:50051 describe crypto.insight.v1.InsightService
+
+# Call GetInsight
+grpcurl -plaintext \
+  -d '{"coin_id": "bitcoin", "days": 30}' \
+  localhost:50051 \
+  crypto.insight.v1.InsightService/GetInsight
+```
+
+To regenerate stubs after editing `proto/crypto/insight/v1/insight.proto`:
+```bash
+make proto
+```
+
 ## API Documentation
 
 - **Swagger UI**: `http://localhost:8000/docs`
@@ -160,16 +188,32 @@ The ALB DNS is output as `app_url`. Run migrations against the RDS instance befo
 
 ### CI/CD
 
-On push to `main`, GitHub Actions:
-1. Lints with Ruff
-2. Type-checks with mypy
-3. Scans dependencies for CVEs (`pip-audit`)
-4. Runs pytest with real Postgres
-5. Builds Docker image tagged with commit SHA
-6. Pushes to ECR
-7. Updates ECS service (zero-downtime rolling deploy)
+The pipeline is structured in strict stages — no build runs until every security gate passes.
 
-AWS credentials use **OIDC** — no long-lived secrets stored in GitHub.
+**Stage 1 — Security gates (parallel):**
+| Job | Tool | What it catches |
+|---|---|---|
+| `pipeline-scan` | [poutine](https://github.com/boostsecurityio/poutine) | Injection in workflows, dangerous triggers, unpinned actions |
+| `secret-scan` | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | API keys / credentials in full git history |
+| `sast` | [Semgrep](https://semgrep.dev) | OWASP Top 10, JWT misconfig, FastAPI-specific bugs |
+| `sca` | pip-audit | CVEs in all dependencies (including transitive) |
+| `lockfile-check` | pip-tools | `requirements.lock` out of sync with `requirements.txt` |
+| `iac-validate` | Terraform + LocalStack | Infra config errors without touching real AWS |
+
+**Stage 2 — Code quality (parallel, after Stage 1):**
+- Ruff (lint), mypy (type check), pytest unit tests (no DB)
+
+**Stage 3 — Integration tests:**
+- pytest against real Postgres + Redis
+
+**Stage 4 — E2E tests:**
+- Newman runs the full Postman collection against a live server
+
+**Stage 5 — Build & deploy (main branch only):**
+- Docker image built, tagged with commit SHA, pushed to ECR
+- ECS service updated (zero-downtime rolling deploy)
+
+AWS credentials use **OIDC** — no long-lived secrets stored in GitHub. All Actions are pinned to immutable commit SHAs, never version tags.
 
 Required GitHub Secrets: `AWS_OIDC_ROLE_ARN`, `AWS_REGION`, `ECR_REPOSITORY`, `ECS_CLUSTER`, `ECS_SERVICE`
 
@@ -186,3 +230,14 @@ Not all endpoints are user-facing. `/refresh` is a privileged operation called b
 
 ### Supply Chain Security
 GitHub Actions are pinned to commit SHAs (not version tags, which can be moved). AWS credentials use OIDC — no static `AWS_ACCESS_KEY_ID` stored in GitHub Secrets. Docker images are tagged with git commit SHA, never `latest`.
+
+The pipeline itself is scanned on every push by **poutine** — the same static analysis engine that powers [SmokedMeat](https://github.com/boostsecurityio/smokedmeat), a CI/CD red team framework used to find and exploit vulnerable workflows. Running poutine in CI means the pipeline validates its own defenses: if a future change introduces a dangerous trigger or an unpinned action, the build fails before any code runs.
+
+To manually red-team the pipeline (requires Docker):
+```bash
+git clone https://github.com/boostsecurityio/smokedmeat.git
+cd smokedmeat
+make quickstart
+# Enter your GitHub PAT and target this repo
+# Expected result: no exploitable workflows found
+```

@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,19 +10,28 @@ from slowapi.util import get_remote_address
 from app.api.v1.router import router
 from app.config import settings
 from app.core.cache import close_redis
+from app.grpc_server.server import serve as grpc_serve
 
 limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: run Alembic migrations programmatically
+    # Run Alembic migrations on startup
     from alembic import command
     from alembic.config import Config
     alembic_cfg = Config("alembic.ini")
     command.upgrade(alembic_cfg, "head")
+
+    # Start gRPC server in background alongside FastAPI (REST :8000, gRPC :50051).
+    # Same process, two transports — mirrors the Dataminr agentic-search pattern.
+    grpc_task = asyncio.create_task(grpc_serve())
+
     yield
+
     # Shutdown
+    grpc_task.cancel()
+    await asyncio.gather(grpc_task, return_exceptions=True)
     await close_redis()
 
 

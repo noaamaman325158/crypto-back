@@ -1,7 +1,7 @@
 """Unit tests for CryptoService — CoinGecko and DB are fully mocked."""
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

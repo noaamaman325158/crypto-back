@@ -28,6 +28,12 @@ slowapi==0.1.9
 # AI
 anthropic==0.40.0
 
+# gRPC
+grpcio==1.68.1
+grpcio-tools==1.68.1
+grpcio-reflection==1.68.1
+googleapis-common-protos==1.65.0
+
 # Utils
 python-dotenv==1.0.1
 python-multipart==0.0.20

@@ -1,6 +1,6 @@
 """Unit tests for AuthService — DB is fully mocked."""
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
