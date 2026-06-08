@@ -412,11 +412,9 @@ jobs:
           done
 
       - name: Install k6
-        run: |
-          curl -fsSL https://pkg.grafana.com/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
-          echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://pkg.grafana.com/oss/deb stable main" \
-            | sudo tee /etc/apt/sources.list.d/grafana.list
-          sudo apt-get update -q && sudo apt-get install -y k6
+        # Use official k6 GitHub Action — avoids external apt repo DNS failures.
+        # Pinned to commit SHA (not tag) for supply-chain safety.
+        uses: grafana/setup-k6-action@8c3be52cc17dee055c9e8757a66fb97d946dd248  # v2.0.0
 
       - name: Seed coin data
         run: |
