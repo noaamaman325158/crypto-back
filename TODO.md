@@ -157,6 +157,92 @@
     - [ ] Add log sampling for high-volume endpoints (log 1% of successful coin list requests,
           100% of errors) to control CloudWatch costs
 
+- [ ] **Feature Gating by Plan (Freemium / Premium RBAC)**
+  - **The business problem**: expensive features (price history, AI insight) should be
+    restricted by subscription tier — free users get limited access, paying users get full access.
+    This is already enabled architecturally: the User model has a `role` field and RBAC
+    dependencies exist (`require_admin`, `get_current_user`). Extending to `premium` is additive.
+  - **Current RBAC state**: `user` / `admin` roles only. ✅ foundation exists.
+  - **What to add**:
+
+  **1. Extend the role model**
+  ```python
+  # User.role: "free" | "premium" | "admin"
+  # Migration: ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'
+  ```
+
+  **2. Plan-aware dependency**
+  ```python
+  # app/api/v1/dependencies.py
+  async def require_premium(current_user: User = Depends(get_current_user)) -> User:
+      if current_user.role not in ("premium", "admin"):
+          raise HTTPException(
+              status_code=403,
+              detail={
+                  "code": "PLAN_LIMIT_EXCEEDED",
+                  "message": "This feature requires a premium subscription.",
+                  "upgrade_url": "https://your-app.com/upgrade"
+              }
+          )
+      return current_user
+  ```
+
+  **3. History endpoint — days gating**
+  ```python
+  # Free users: max 7 days history
+  # Premium users: up to 90 days (or 365 with paid CoinGecko plan)
+  PLAN_MAX_DAYS = {"free": 7, "premium": 90, "admin": 365}
+
+  @router.get("/{external_id}/history")
+  async def get_price_history(
+      days: int = Query(7),
+      current_user: User = Depends(get_current_user),
+  ):
+      max_days = PLAN_MAX_DAYS.get(current_user.role, 7)
+      if days > max_days:
+          raise HTTPException(403, detail={
+              "code": "PLAN_LIMIT_EXCEEDED",
+              "max_days": max_days,
+              "requested_days": days,
+              "upgrade_url": "https://your-app.com/upgrade"
+          })
+  ```
+
+  **4. AI Insight — premium only**
+  ```python
+  # GET /cryptocurrencies/:id/insight → require_premium dependency
+  # Free users get 403 with upgrade_url, not 401
+  ```
+
+  **5. Watchlist size limit**
+  ```python
+  # Free: max 5 coins in watchlist
+  # Premium: unlimited
+  PLAN_MAX_WATCHLIST = {"free": 5, "premium": None}
+  # Check count before add: if len(items) >= limit → 403 PLAN_LIMIT_EXCEEDED
+  ```
+
+  - **Implementation steps**:
+    - [ ] DB migration: add `plan` column to users (`free`/`premium`/`admin`), keep `role`
+          for auth permissions — separate concerns (identity vs entitlement)
+    - [ ] `app/api/v1/dependencies.py` — `require_premium()` dependency
+    - [ ] `app/core/plans.py` — `PLAN_LIMITS` dict: maps plan → feature limits
+          (max_history_days, max_watchlist_size, ai_insight_enabled, etc.)
+    - [ ] Apply gating to: `/history` (days cap), `/insight` (plan gate), `/watchlist POST` (size cap)
+    - [ ] Return structured 403 with `upgrade_url` — not a generic forbidden
+    - [ ] Unit tests: free user hitting premium endpoint → 403 with correct error code
+    - [ ] Integration tests: verify day cap enforced, watchlist size enforced
+    - [ ] Mention in Swagger docs: mark premium endpoints with a tag or description
+    - [ ] README: document which endpoints are free vs premium
+
+  - **Why the architecture already supports this (mention in video)**:
+    > "When I designed the auth layer with RBAC and a `role` field on the User model,
+    > I wasn't just thinking about admin access — I was thinking about monetisation.
+    > Adding a `premium` tier is a one-migration, zero-refactor change. The dependency
+    > injection system means I add `require_premium` to one line in the endpoint, and
+    > the entire enforcement is in one place. This is the difference between a system
+    > designed for growth and one designed to just pass the assignment."
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
