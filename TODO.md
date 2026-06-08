@@ -243,6 +243,79 @@
     > the entire enforcement is in one place. This is the difference between a system
     > designed for growth and one designed to just pass the assignment."
 
+- [ ] **Idempotency — safe retry semantics for mutating endpoints**
+  - **The problem**: what happens when a user double-taps "Add to Watchlist", or
+    the frontend retries a failed POST due to a network timeout?
+    - A junior solution: DB throws a duplicate key error → unhandled 500 or ugly 409
+    - A senior solution: the API is idempotent by design — retrying the same operation
+      produces the same result without side effects, and the response is always clean
+
+  - **Current state**: `POST /watchlist` returns 409 on duplicate. ✅ better than 500,
+    but still forces the client to handle a "conflict" that isn't really an error from
+    the user's perspective — they just want the coin in their watchlist.
+
+  - **Two strategies (choose per endpoint semantics)**:
+
+    **Strategy A — Natural idempotency via UPSERT (recommended for watchlist)**
+    ```python
+    # Instead of: INSERT → catch IntegrityError → return 409
+    # Do:         INSERT ON CONFLICT DO NOTHING → always return 200/201
+    # The DB constraint still prevents duplicates, but the API treats
+    # "already exists" as success — the desired state is achieved.
+
+    stmt = insert(WatchlistItem).values(...).on_conflict_do_nothing(
+        constraint="uq_user_crypto"
+    )
+    # Return 200 if already existed, 201 if newly created
+    # Client doesn't need to handle 409 — simplifies frontend logic
+    ```
+
+    **Strategy B — Client-driven idempotency key (for financial/critical operations)**
+    ```python
+    # Client sends: Idempotency-Key: <uuid> header
+    # Server stores: Redis key "idempotency:{key}" → cached response (24h TTL)
+    # On retry: return the exact same response as the first call
+    # Guarantees: even if the first request partially completed before crashing,
+    #             the retry won't double-execute
+
+    # middleware/idempotency.py
+    async def idempotency_middleware(request, call_next):
+        key = request.headers.get("Idempotency-Key")
+        if key and request.method in ("POST", "PUT", "PATCH"):
+            cached = await cache_get(f"idempotency:{key}")
+            if cached:
+                return JSONResponse(cached["body"], status_code=cached["status"])
+            response = await call_next(request)
+            await cache_set(f"idempotency:{key}", {...}, ttl=86400)
+            return response
+    ```
+
+  - **Apply per endpoint**:
+    | Endpoint | Strategy | Why |
+    |---|---|---|
+    | `POST /watchlist` | A (UPSERT + return 200) | User intent: "coin should be in watchlist" |
+    | `DELETE /watchlist/:id` | Natural — 404 is acceptable | Deleting non-existent = already deleted |
+    | `POST /auth/register` | Keep 409 — duplicate email IS an error | User needs to know email is taken |
+    | `POST /cryptocurrencies/refresh` | Idempotency-Key header | Prevents double-refresh from concurrent schedulers |
+
+  - **Implementation steps**:
+    - [ ] `POST /watchlist` — change from INSERT+catch to UPSERT `ON CONFLICT DO NOTHING`,
+          return 200 with existing item if duplicate, 201 if new
+    - [ ] `app/middleware/idempotency.py` — middleware that reads `Idempotency-Key` header,
+          checks Redis cache, returns cached response on retry
+    - [ ] Apply idempotency middleware to `POST /cryptocurrencies/refresh`
+    - [ ] Unit tests: same request twice → same response, no duplicate DB rows
+    - [ ] Integration test: concurrent POSTs to `/watchlist` with same coin → exactly 1 row
+    - [ ] Document `Idempotency-Key` header in Swagger and README
+
+  - **Why this matters (mention in video)**:
+    > "In financial systems and crypto dashboards where users might retry
+    > aggressively or networks are unreliable, idempotency isn't a nice-to-have —
+    > it's a correctness requirement. A user seeing 'coin added' twice in their
+    > watchlist because they had bad WiFi is a trust-destroying bug.
+    > The UniqueConstraint in the DB is the last line of defence.
+    > The UPSERT pattern means we never even reach that error path."
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
