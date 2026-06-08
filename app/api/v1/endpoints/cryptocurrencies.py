@@ -1,7 +1,7 @@
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import require_internal_api_key
@@ -59,9 +59,12 @@ async def refresh_cryptocurrencies(
 async def get_price_history(
     request: Request,
     external_id: str,
-    days: Literal[7, 30, 90] = Query(30),
+    # Literal[int] doesn't coerce string query params — use int + validation
+    days: int = Query(30, ge=7, description="Must be 7, 30, or 90"),
     service: CryptoService = Depends(get_crypto_service),
 ):
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=422, detail="days must be 7, 30, or 90")
     return await service.get_history(external_id=external_id, days=days)
 
 
