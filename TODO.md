@@ -316,6 +316,106 @@
     > The UniqueConstraint in the DB is the last line of defence.
     > The UPSERT pattern means we never even reach that error path."
 
+- [ ] **Async Refresh — non-blocking background execution**
+  - **The problem**: `POST /cryptocurrencies/refresh` currently calls CoinGecko synchronously.
+    Even with `async/await`, the HTTP connection stays open and the response is held until
+    CoinGecko responds (500ms–2s). Under load, every refresh request ties up a worker slot.
+    A frontend "Refresh" button that waits 2 seconds for a response is a bad UX and a DoS risk.
+
+  - **The senior solution — 202 Accepted + background task**:
+    ```
+    Client          API             CoinGecko
+      |               |                 |
+      |─POST /refresh─►|                 |
+      |◄──202 Accepted─|                 |
+      |   {job_id}     |                 |
+      |               |──fetch markets──►|
+      |               |◄──coin data──────|
+      |               |──upsert DB───►   |
+      |               |──clear cache──►  |
+      |                                  |
+      |─GET /cryptocurrencies ──────────►|  ← next request gets fresh data
+    ```
+
+  - **Three implementation tiers** (choose based on scale):
+
+    **Tier 1 — FastAPI BackgroundTasks (current scale, simplest)**
+    ```python
+    from fastapi import BackgroundTasks
+
+    @router.post("/refresh", status_code=202)
+    async def refresh_cryptocurrencies(
+        background_tasks: BackgroundTasks,
+        service: CryptoService = Depends(get_crypto_service),
+    ):
+        background_tasks.add_task(service.refresh)
+        return {"status": "accepted", "message": "Refresh started in background"}
+    # Pro: zero extra infra, runs in same process
+    # Con: if the process crashes, the task is lost. No retry, no status tracking.
+    ```
+
+    **Tier 2 — Job status tracking (recommended for this assignment)**
+    ```python
+    # POST /refresh → generate job_id → store in Redis → start background task
+    # GET /refresh/status/{job_id} → return {status: pending|running|done|failed, updated: N}
+
+    @router.post("/refresh", status_code=202)
+    async def refresh_cryptocurrencies(background_tasks: BackgroundTasks):
+        job_id = str(uuid.uuid4())
+        await cache_set(f"refresh:job:{job_id}", {"status": "pending"}, ttl=300)
+        background_tasks.add_task(_run_refresh, job_id)
+        return {"job_id": job_id, "status": "accepted",
+                "poll_url": f"/api/v1/cryptocurrencies/refresh/status/{job_id}"}
+
+    @router.get("/refresh/status/{job_id}")
+    async def refresh_status(job_id: str):
+        job = await cache_get(f"refresh:job:{job_id}")
+        if not job:
+            raise NotFoundError("Job not found or expired")
+        return job  # {status, updated_count, completed_at, error}
+    ```
+
+    **Tier 3 — Celery + Redis broker (production at scale)**
+    ```python
+    # tasks/refresh.py
+    @celery.task(bind=True, max_retries=3, default_retry_delay=30)
+    def refresh_coins_task(self):
+        try:
+            count = sync_refresh()  # sync version for Celery
+            return {"updated": count}
+        except CoinGeckoError as e:
+            self.retry(exc=e)
+    # Pro: persistent queue, retries, worker isolation, scheduled runs (beat)
+    # Con: adds Redis as broker + Celery workers to infra
+    ```
+
+  - **Which to implement for this assignment**: Tier 2 — job status tracking.
+    It demonstrates the async pattern cleanly, adds a polled status endpoint
+    (realistic real-world pattern), and requires zero extra infra beyond Redis
+    which we already have.
+
+  - **Implementation steps**:
+    - [ ] `POST /cryptocurrencies/refresh` → return `202 Accepted` + `job_id` immediately
+    - [ ] `GET /cryptocurrencies/refresh/status/{job_id}` → poll job status from Redis
+    - [ ] Background task updates Redis: `pending` → `running` → `done` / `failed`
+    - [ ] On completion: store `{status, updated_count, completed_at, duration_ms}`
+    - [ ] On failure: store `{status: "failed", error: "...", failed_at}`
+    - [ ] Idempotency: if a refresh job is already `running`, return its `job_id` instead
+          of starting a new one (prevents parallel refresh storms)
+    - [ ] Unit tests: verify 202 returned immediately, background task called
+    - [ ] Integration test: poll status until `done`, verify coins updated
+    - [ ] Update Postman collection: seed step uses polling instead of fire-and-forget
+    - [ ] Mention Celery as the next step for production scale in README/video
+
+  - **Why this matters (mention in video)**:
+    > "The current refresh endpoint is synchronous — the HTTP connection stays open
+    > for 2 seconds while we wait for CoinGecko. I designed it as async with 202 Accepted
+    > and job-status polling, which is the pattern used by every serious API that
+    > triggers slow external work — AWS, Stripe, GitHub Actions all use this.
+    > At scale this would move to Celery with a Redis broker so refresh jobs survive
+    > process restarts and can be scheduled automatically — but FastAPI BackgroundTasks
+    > is the right starting point before you have that operational overhead."
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
