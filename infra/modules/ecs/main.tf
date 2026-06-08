@@ -60,10 +60,29 @@ resource "aws_ecs_task_definition" "app" {
 }
 
 # Secrets stored in SSM Parameter Store (encrypted) — not in env vars or TF state
-resource "aws_ssm_parameter" "secret_key"        { name = "/${var.project_name}/SECRET_KEY";        type = "SecureString"; value = var.secret_key }
-resource "aws_ssm_parameter" "internal_api_key"  { name = "/${var.project_name}/INTERNAL_API_KEY";  type = "SecureString"; value = var.internal_api_key }
-resource "aws_ssm_parameter" "anthropic_api_key" { name = "/${var.project_name}/ANTHROPIC_API_KEY"; type = "SecureString"; value = var.anthropic_api_key }
-resource "aws_ssm_parameter" "coingecko_api_key" { name = "/${var.project_name}/COINGECKO_API_KEY"; type = "SecureString"; value = var.coingecko_api_key }
+resource "aws_ssm_parameter" "secret_key" {
+  name  = "/${var.project_name}/SECRET_KEY"
+  type  = "SecureString"
+  value = var.secret_key
+}
+
+resource "aws_ssm_parameter" "internal_api_key" {
+  name  = "/${var.project_name}/INTERNAL_API_KEY"
+  type  = "SecureString"
+  value = var.internal_api_key
+}
+
+resource "aws_ssm_parameter" "anthropic_api_key" {
+  name  = "/${var.project_name}/ANTHROPIC_API_KEY"
+  type  = "SecureString"
+  value = var.anthropic_api_key
+}
+
+resource "aws_ssm_parameter" "coingecko_api_key" {
+  name  = "/${var.project_name}/COINGECKO_API_KEY"
+  type  = "SecureString"
+  value = var.coingecko_api_key
+}
 
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"

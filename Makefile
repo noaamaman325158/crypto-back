@@ -27,3 +27,19 @@ test-integration:
 
 run:
 	uvicorn app.main:app --reload --port 8000
+
+# Terraform LocalStack targets (runs from infra/localstack/)
+tf-localstack-init:
+	cd infra/localstack && terraform init
+
+tf-localstack-plan:
+	cd infra/localstack && \
+	TF_VAR_db_password=localstack TF_VAR_secret_key=localstack \
+	TF_VAR_internal_api_key=localstack TF_VAR_anthropic_api_key=localstack \
+	terraform plan -var-file=../localstack.tfvars
+
+tf-localstack-apply:
+	cd infra/localstack && \
+	TF_VAR_db_password=localstack TF_VAR_secret_key=localstack \
+	TF_VAR_internal_api_key=localstack TF_VAR_anthropic_api_key=localstack \
+	terraform apply -var-file=../localstack.tfvars

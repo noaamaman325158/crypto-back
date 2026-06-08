@@ -19,7 +19,7 @@ export TF_VAR_internal_api_key=localstack-api-key
 export TF_VAR_anthropic_api_key=localstack-anthropic-key
 export TF_VAR_image_tag=local-dev
 
-cd "$(dirname "$0")/../infra"
+cd "$(dirname "$0")/../infra/localstack"
 
 terraform init -reconfigure
-terraform "$COMMAND" -var-file=localstack.tfvars "$@"
+terraform "$COMMAND" -var-file=../localstack.tfvars "$@"

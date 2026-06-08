@@ -124,19 +124,20 @@ jobs:
         with:
           terraform_version: "1.6.6"
 
-      - name: Terraform Init (LocalStack)
+      - name: Terraform Validate — production config (syntax only, no AWS)
         working-directory: infra
-        run: terraform init
+        run: terraform init -backend=false && terraform validate
 
-      - name: Terraform Validate (syntax + schema check — no AWS needed)
-        working-directory: infra
-        run: terraform validate
+      - name: Terraform Init — LocalStack config
+        working-directory: infra/localstack
+        run: terraform init
 
       - name: Terraform Plan against LocalStack
         # Plan against LocalStack to catch resource reference errors and
         # missing variable bindings without spending real AWS money.
-        # LocalStack accepts "test"/"test" as credentials.
-        working-directory: infra
+        # LocalStack config lives in infra/localstack/ — separate from production
+        # config to avoid duplicate provider conflicts.
+        working-directory: infra/localstack
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
@@ -148,7 +149,7 @@ jobs:
           TF_VAR_image_tag: ci-test
         run: |
           terraform plan \
-            -var-file=localstack.tfvars \
+            -var-file=../localstack.tfvars \
             -out=tfplan.binary
           terraform show -no-color tfplan.binary
 
