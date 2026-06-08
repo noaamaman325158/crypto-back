@@ -36,6 +36,10 @@ grpcio-tools==1.68.1
 grpcio-reflection==1.68.1
 googleapis-common-protos==1.65.0
 
+# Observability
+prometheus-fastapi-instrumentator==7.0.0
+prometheus-client==0.21.1
+
 # Utils
 python-dotenv==1.2.2
 python-multipart==0.0.27
