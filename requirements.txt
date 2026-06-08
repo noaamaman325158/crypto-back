@@ -1,5 +1,6 @@
 # Web framework
 fastapi==0.136.3
+starlette==1.2.1  # pin explicitly — fastapi allows >=0.46.0, fix CVE PYSEC-2026-161 (fixed in 1.0.1)
 uvicorn[standard]==0.32.1
 
 # Database
@@ -37,7 +38,7 @@ grpcio-reflection==1.68.1
 googleapis-common-protos==1.65.0
 
 # Observability
-prometheus-fastapi-instrumentator==7.0.0
+prometheus-fastapi-instrumentator==8.0.0  # v8+ requires starlette>=1.0.0, resolving CVE conflict
 prometheus-client==0.21.1
 
 # Utils
