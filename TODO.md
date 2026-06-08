@@ -842,6 +842,179 @@
     > The expand-contract pattern for schema changes means you can ship a column
     > rename across 3 deploys with zero downtime and zero table locks."
 
+- [ ] **Backfill & Parity Scripts — data correctness across schema changes**
+  - **What they are**:
+    - **Backfill script**: populates a new column or table with data derived from
+      existing data. Runs after `Expand` in the expand-contract pattern.
+    - **Parity script**: validates that the backfill completed correctly — compares
+      old and new columns/tables row by row and reports discrepancies.
+      The safety net before you drop the old column in the `Contract` phase.
+
+  - **Why they exist as separate scripts, not inside migrations**:
+    - Migrations run inside a transaction — a 10M-row backfill inside a transaction
+      holds a lock for the entire duration and can OOM the DB
+    - Backfill scripts run in batches with sleep between batches, outside any
+      transaction, so they're safe to run against a live production DB
+    - Parity scripts can be re-run multiple times before the contract phase
+      to verify correctness — you can't re-run a migration
+
+  - **Concrete example for this project — adding `plan` column to users**:
+
+    ```python
+    # scripts/backfill_user_plan.py
+    # Run AFTER migration adds nullable `plan` column (Expand phase)
+    # Run BEFORE migration sets NOT NULL + drops old `role` semantics (Contract phase)
+
+    import asyncio
+    from sqlalchemy import select, update
+    from app.db.database import AsyncSessionLocal
+
+    BATCH_SIZE = 1000
+    SLEEP_BETWEEN_BATCHES = 0.1  # 100ms — lets DB breathe under load
+
+    async def backfill():
+        async with AsyncSessionLocal() as db:
+            offset = 0
+            total_updated = 0
+
+            while True:
+                # Fetch batch of users where plan is not yet set
+                result = await db.execute(
+                    select(User.id, User.role)
+                    .where(User.plan == None)
+                    .limit(BATCH_SIZE)
+                    .offset(offset)
+                )
+                rows = result.fetchall()
+                if not rows:
+                    break
+
+                # Map old role semantics to new plan
+                for user_id, role in rows:
+                    new_plan = "admin" if role == "admin" else "free"
+                    await db.execute(
+                        update(User).where(User.id == user_id)
+                        .values(plan=new_plan)
+                    )
+
+                await db.commit()
+                total_updated += len(rows)
+                print(f"Backfilled {total_updated} users...")
+                await asyncio.sleep(SLEEP_BETWEEN_BATCHES)
+
+            print(f"Done. Total backfilled: {total_updated}")
+
+    asyncio.run(backfill())
+    ```
+
+    ```python
+    # scripts/parity_user_plan.py
+    # Run BEFORE the Contract phase (dropping old column)
+    # Verifies: every user has a plan, no NULL values, plan matches expected mapping
+
+    async def check_parity():
+        async with AsyncSessionLocal() as db:
+            # Check 1: no NULLs remain
+            null_count = await db.scalar(
+                select(func.count()).where(User.plan == None)
+            )
+            assert null_count == 0, f"FAIL: {null_count} users still have NULL plan"
+
+            # Check 2: admin roles map to admin plan
+            mismatch = await db.execute(
+                select(User.id, User.role, User.plan)
+                .where(
+                    (User.role == "admin") & (User.plan != "admin") |
+                    (User.role != "admin") & (User.plan == "admin")
+                )
+            )
+            rows = mismatch.fetchall()
+            if rows:
+                print(f"FAIL: {len(rows)} role/plan mismatches:")
+                for r in rows[:10]:
+                    print(f"  user {r.id}: role={r.role}, plan={r.plan}")
+                raise SystemExit(1)
+
+            # Check 3: totals match
+            total_users = await db.scalar(select(func.count()).select_from(User))
+            total_with_plan = await db.scalar(
+                select(func.count()).where(User.plan != None)
+            )
+            assert total_users == total_with_plan, \
+                f"FAIL: {total_users} users but only {total_with_plan} have plan set"
+
+            print(f"PASS: all {total_users} users have correct plan. Safe to contract.")
+
+    asyncio.run(check_parity())
+    ```
+
+  - **Concrete example — populating `price_history` from CoinGecko**:
+    ```python
+    # scripts/backfill_price_history.py
+    # One-time script: fetch historical data for all coins and populate price_history
+    # Runs once after the PriceHistory table migration, before the app starts reading from it
+
+    async def backfill_price_history():
+        coins = await get_all_coins()
+        for coin in coins:
+            for days in [90]:  # backfill 90 days of history
+                raw = await coingecko.fetch_history(coin.external_id, days=days)
+                prices = [
+                    PriceHistory(
+                        cryptocurrency_id=coin.id,
+                        timestamp=datetime.fromtimestamp(ts/1000, tz=timezone.utc),
+                        price=price,
+                    )
+                    for ts, price in raw["prices"]
+                ]
+                # Batch insert with ON CONFLICT DO NOTHING (idempotent)
+                await db.execute(
+                    insert(PriceHistory)
+                    .values([p.__dict__ for p in prices])
+                    .on_conflict_do_nothing(constraint="uq_price_history_coin_time")
+                )
+                await db.commit()
+                await asyncio.sleep(1.5)  # respect CoinGecko rate limit
+            print(f"Backfilled history for {coin.symbol}")
+    ```
+
+  - **Script properties — non-negotiable**:
+    | Property | Why |
+    |---|---|
+    | **Idempotent** | Safe to run twice — use `ON CONFLICT DO NOTHING` or `WHERE column IS NULL` |
+    | **Batched** | Never `UPDATE all_10M_rows` in one query — batch with sleep |
+    | **Progress logging** | Print every N rows so you know it's working and can estimate ETA |
+    | **Dry-run mode** | `--dry-run` flag: prints what would change without committing |
+    | **Resumable** | If it crashes at row 500K, re-running starts from row 500K (not row 0) |
+    | **Parity check** | Always paired with a verification script before contract phase |
+
+  - **Where scripts live**:
+    ```
+    scripts/
+    ├── backfill_user_plan.py        ← one-time, run once per environment
+    ├── parity_user_plan.py          ← validation before contract phase
+    ├── backfill_price_history.py    ← seed historical data
+    └── README.md                    ← when to run each script, in what order
+    ```
+
+  - **Implementation steps**:
+    - [ ] `scripts/` directory with `README.md` explaining the run order
+    - [ ] `backfill_user_plan.py` — batch update `plan` from `role` (1000 rows at a time)
+    - [ ] `parity_user_plan.py` — verify no NULLs, totals match, role→plan mapping correct
+    - [ ] `backfill_price_history.py` — populate `price_history` from CoinGecko (idempotent)
+    - [ ] All scripts: `--dry-run` flag, progress logging, graceful SIGINT handling
+    - [ ] Add scripts to CI as a validation step: `python scripts/parity_user_plan.py`
+          runs after the migration task and before the service update
+
+  - **Why this matters (mention in video)**:
+    > "A migration adds the column. A backfill populates it. A parity script proves
+    > it was done correctly. Most engineers ship the migration and hope the backfill
+    > runs cleanly — but in production you need to verify before you commit to the
+    > contract phase and drop the old column. A parity script that runs in CI before
+    > the deploy proceeds is the difference between 'I think it worked' and
+    > 'I can prove it worked'. This is the same pattern used by companies like
+    > GitHub and Shopify for their zero-downtime schema migrations."
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
