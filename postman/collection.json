@@ -19,7 +19,8 @@
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 201', () => pm.response.to.have.status(201));",
-              "pm.test('Has email', () => pm.expect(pm.response.json()).to.have.property('email'));"
+              "pm.test('Has email', () => pm.expect(pm.response.json()).to.have.property('email'));",
+              "pm.test('Role is user', () => pm.expect(pm.response.json().role).to.eql('user'));"
             ]}
           }]
         },
@@ -35,9 +36,11 @@
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 200', () => pm.response.to.have.status(200));",
-              "const data = pm.response.json();",
-              "pm.test('Has access_token', () => pm.expect(data).to.have.property('access_token'));",
-              "pm.environment.set('jwt_token', data.access_token);"
+              "const loginData = pm.response.json();",
+              "pm.test('Has access_token', () => pm.expect(loginData).to.have.property('access_token'));",
+              "pm.test('Has refresh_token', () => pm.expect(loginData).to.have.property('refresh_token'));",
+              "pm.environment.set('jwt_token', loginData.access_token);",
+              "pm.environment.set('refresh_token', loginData.refresh_token);"
             ]}
           }]
         },
@@ -52,7 +55,27 @@
           "event": [{
             "listen": "test",
             "script": { "exec": [
-              "pm.test('Status 200', () => pm.response.to.have.status(200));"
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const refreshData = pm.response.json();",
+              "pm.test('Has new access_token', () => pm.expect(refreshData).to.have.property('access_token'));",
+              "pm.test('Has new refresh_token', () => pm.expect(refreshData).to.have.property('refresh_token'));",
+              "pm.environment.set('jwt_token', refreshData.access_token);",
+              "pm.environment.set('refresh_token', refreshData.refresh_token);"
+            ]}
+          }]
+        },
+        {
+          "name": "Login Wrong Password",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"email\": \"demo@example.com\", \"password\": \"wrongpassword\"}" }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 401 on wrong password', () => pm.response.to.have.status(401));"
             ]}
           }]
         }
@@ -72,7 +95,36 @@
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 200', () => pm.response.to.have.status(200));",
-              "pm.test('Has updated count', () => pm.expect(pm.response.json()).to.have.property('updated'));"
+              "const refreshResp = pm.response.json();",
+              "pm.test('Has updated count', () => pm.expect(refreshResp).to.have.property('updated'));",
+              "pm.test('Updated is a number', () => pm.expect(refreshResp.updated).to.be.a('number'));"
+            ]}
+          }]
+        },
+        {
+          "name": "Refresh without API key returns 422",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/refresh"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 422 without API key', () => pm.response.to.have.status(422));"
+            ]}
+          }]
+        },
+        {
+          "name": "Refresh with wrong API key returns 403",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/refresh",
+            "header": [{ "key": "X-API-Key", "value": "wrong-key" }]
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 403 with wrong API key', () => pm.response.to.have.status(403));"
             ]}
           }]
         },
@@ -94,10 +146,15 @@
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 200', () => pm.response.to.have.status(200));",
-              "const data = pm.response.json();",
-              "pm.test('Has data array', () => pm.expect(data.data).to.be.an('array'));",
-              "pm.test('Has pagination', () => { pm.expect(data).to.have.property('total'); pm.expect(data).to.have.property('page'); });",
-              "if (data.data.length > 0) pm.environment.set('coin_id', data.data[0].id);"
+              "const listResp = pm.response.json();",
+              "pm.test('Has data array', () => pm.expect(listResp.data).to.be.an('array'));",
+              "pm.test('Has total', () => pm.expect(listResp).to.have.property('total'));",
+              "pm.test('Has page', () => pm.expect(listResp).to.have.property('page'));",
+              "pm.test('Has per_page', () => pm.expect(listResp).to.have.property('per_page'));",
+              "if (listResp.data.length > 0) {",
+              "  pm.environment.set('coin_id', listResp.data[0].id);",
+              "  pm.environment.set('coin_external_id', listResp.data[0].external_id);",
+              "}"
             ]}
           }]
         },
@@ -111,7 +168,24 @@
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 200', () => pm.response.to.have.status(200));",
-              "pm.test('Has symbol', () => pm.expect(pm.response.json()).to.have.property('symbol'));"
+              "const coinDetail = pm.response.json();",
+              "pm.test('Has symbol', () => pm.expect(coinDetail).to.have.property('symbol'));",
+              "pm.test('Has current_price', () => pm.expect(coinDetail).to.have.property('current_price'));",
+              "pm.test('Has market_cap', () => pm.expect(coinDetail).to.have.property('market_cap'));",
+              "pm.test('Has external_id', () => pm.expect(coinDetail).to.have.property('external_id'));"
+            ]}
+          }]
+        },
+        {
+          "name": "Get Nonexistent Coin returns 404",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/00000000-0000-0000-0000-000000000000"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 404 for unknown coin', () => pm.response.to.have.status(404));"
             ]}
           }]
         },
@@ -119,15 +193,33 @@
           "name": "Price History (30d)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/cryptocurrencies/bitcoin/history?days=30"
+            "url": "{{base_url}}/api/v1/cryptocurrencies/{{coin_external_id}}/history?days=30"
           },
           "event": [{
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 200', () => pm.response.to.have.status(200));",
-              "const data = pm.response.json();",
-              "pm.test('Has prices array', () => pm.expect(data.prices).to.be.an('array'));",
-              "pm.test('Prices have timestamp and price', () => { if (data.prices.length > 0) { pm.expect(data.prices[0]).to.have.property('timestamp'); pm.expect(data.prices[0]).to.have.property('price'); } });"
+              "const histResp = pm.response.json();",
+              "pm.test('Has prices array', () => pm.expect(histResp.prices).to.be.an('array'));",
+              "pm.test('Has coin_id', () => pm.expect(histResp).to.have.property('coin_id'));",
+              "pm.test('Has days', () => pm.expect(histResp).to.have.property('days'));",
+              "if (histResp.prices.length > 0) {",
+              "  pm.test('Price has timestamp', () => pm.expect(histResp.prices[0]).to.have.property('timestamp'));",
+              "  pm.test('Price has value', () => pm.expect(histResp.prices[0]).to.have.property('price'));",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Price History invalid days returns 422",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/bitcoin/history?days=999"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 422 for invalid days', () => pm.response.to.have.status(422));"
             ]}
           }]
         },
@@ -135,16 +227,22 @@
           "name": "AI Insight (requires auth + ANTHROPIC_API_KEY)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/cryptocurrencies/bitcoin/insight",
+            "url": "{{base_url}}/api/v1/cryptocurrencies/{{coin_external_id}}/insight",
             "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }]
           },
           "event": [{
             "listen": "test",
             "script": { "exec": [
               "// Skip gracefully in CI when ANTHROPIC_API_KEY is not set (502 expected)",
-              "if (pm.response.code === 502) { console.log('AI insight skipped — no ANTHROPIC_API_KEY in CI'); return; }",
+              "if (pm.response.code === 502) {",
+              "  console.log('AI insight skipped — no ANTHROPIC_API_KEY in CI');",
+              "  return;",
+              "}",
               "pm.test('Status 200', () => pm.response.to.have.status(200));",
-              "pm.test('Has insight text', () => pm.expect(pm.response.json()).to.have.property('insight'));"
+              "const insightResp = pm.response.json();",
+              "pm.test('Has insight text', () => pm.expect(insightResp).to.have.property('insight'));",
+              "pm.test('Has coin_id', () => pm.expect(insightResp).to.have.property('coin_id'));",
+              "pm.test('Has generated_at', () => pm.expect(insightResp).to.have.property('generated_at'));"
             ]}
           }]
         }
@@ -153,6 +251,23 @@
     {
       "name": "Watchlist",
       "item": [
+        {
+          "name": "Get Watchlist (empty)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/watchlist",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }]
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const wlResp = pm.response.json();",
+              "pm.test('Has items array', () => pm.expect(wlResp).to.have.property('items'));",
+              "pm.test('Has total', () => pm.expect(wlResp).to.have.property('total'));"
+            ]}
+          }]
+        },
         {
           "name": "Add to Watchlist",
           "request": {
@@ -168,7 +283,28 @@
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 201', () => pm.response.to.have.status(201));",
-              "pm.test('Has cryptocurrency', () => pm.expect(pm.response.json()).to.have.property('cryptocurrency'));"
+              "const addResp = pm.response.json();",
+              "pm.test('Has cryptocurrency', () => pm.expect(addResp).to.have.property('cryptocurrency'));",
+              "pm.test('Has added_at', () => pm.expect(addResp).to.have.property('added_at'));",
+              "pm.environment.set('watchlist_coin_id', addResp.cryptocurrency.id);"
+            ]}
+          }]
+        },
+        {
+          "name": "Add Duplicate returns 409",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/watchlist",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{jwt_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\"cryptocurrency_id\": \"{{coin_id}}\"}" }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 409 for duplicate', () => pm.response.to.have.status(409));"
             ]}
           }]
         },
@@ -183,7 +319,10 @@
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 200', () => pm.response.to.have.status(200));",
-              "pm.test('Has items', () => pm.expect(pm.response.json()).to.have.property('items'));"
+              "const wlData = pm.response.json();",
+              "pm.test('Has items', () => pm.expect(wlData).to.have.property('items'));",
+              "pm.test('Total is 1', () => pm.expect(wlData.total).to.eql(1));",
+              "pm.test('Coin is in watchlist', () => pm.expect(wlData.items[0].cryptocurrency.id).to.eql(pm.environment.get('watchlist_coin_id')));"
             ]}
           }]
         },
@@ -191,13 +330,41 @@
           "name": "Remove from Watchlist",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/api/v1/watchlist/{{coin_id}}",
+            "url": "{{base_url}}/api/v1/watchlist/{{watchlist_coin_id}}",
             "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }]
           },
           "event": [{
             "listen": "test",
             "script": { "exec": [
               "pm.test('Status 204', () => pm.response.to.have.status(204));"
+            ]}
+          }]
+        },
+        {
+          "name": "Watchlist empty after remove",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/watchlist",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt_token}}" }]
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('Watchlist empty after remove', () => pm.expect(pm.response.json().total).to.eql(0));"
+            ]}
+          }]
+        },
+        {
+          "name": "Watchlist requires auth",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/watchlist"
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "exec": [
+              "pm.test('Status 401/403 without token', () => pm.expect(pm.response.code).to.be.oneOf([401, 403]));"
             ]}
           }]
         }
