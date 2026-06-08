@@ -704,6 +704,144 @@
     > This is the principle of least privilege applied to data: expose only what
     > the client needs to do its job, nothing more."
 
+- [ ] **Database Migrations — Production-Safe Strategy**
+  - **Current state**: Alembic is set up with an initial schema migration. ✅
+    Migrations run automatically on startup via `command.upgrade(alembic_cfg, "head")`
+    inside the FastAPI lifespan. ⚠️ This works in dev but is dangerous in production.
+
+  - **Why running migrations on startup is a problem in production**:
+    - If you have 3 ECS tasks, all 3 start simultaneously and all 3 try to run
+      `alembic upgrade head` at the same time — race condition on the migration lock
+    - A migration that takes 30s (e.g. adding an index on a large table) holds up
+      all 3 instances from serving traffic
+    - If the migration fails halfway, you have a partially-migrated DB with
+      some instances on the new schema and some on the old
+
+  - **Production migration strategies**:
+
+    **Strategy 1 — Migration as a separate ECS task (recommended)**
+    ```yaml
+    # In ECS task definition: run migration job BEFORE updating the service
+    # CI/CD pipeline:
+    #   1. Push new Docker image to ECR
+    #   2. Run migration task: aws ecs run-task --task-definition migrate
+    #   3. Wait for migration task to succeed (exit code 0)
+    #   4. Update ECS service with new image
+
+    # Dockerfile.migrate (or use entrypoint override)
+    CMD ["alembic", "upgrade", "head"]
+    ```
+    ```yaml
+    # .github/workflows/ci-cd.yml — in deploy job:
+    - name: Run DB migrations
+      run: |
+        aws ecs run-task \
+          --cluster ${{ secrets.ECS_CLUSTER }} \
+          --task-definition ${{ secrets.MIGRATE_TASK_DEFINITION }} \
+          --launch-type FARGATE \
+          --network-configuration "..."
+        # Wait for task to complete and check exit code
+    ```
+
+    **Strategy 2 — Init container pattern (Kubernetes)**
+    ```yaml
+    # initContainers run before the main container starts
+    # Guarantees: migration complete before any app instance starts
+    initContainers:
+      - name: migrate
+        image: your-app:sha
+        command: ["alembic", "upgrade", "head"]
+    ```
+
+    **Strategy 3 — Alembic migration lock (minimal change)**
+    ```python
+    # Alembic uses a lock table in the DB — only one process runs at a time.
+    # Current code already benefits from this partially, but startup is still slow.
+    # Add explicit check: skip migration if already at head
+    from alembic.runtime.migration import MigrationContext
+    with engine.connect() as conn:
+        context = MigrationContext.configure(conn)
+        current = context.get_current_revision()
+        if current != head_revision:
+            command.upgrade(alembic_cfg, "head")
+    ```
+
+  - **Zero-downtime migration patterns** — column changes without downtime:
+
+    **Expand-contract pattern** (the only safe way to rename a column):
+    ```
+    Phase 1 — Expand:   ADD COLUMN new_name, keep old_name
+    Phase 2 — Migrate:  backfill new_name from old_name (batched, not one UPDATE)
+    Phase 3 — Switch:   deploy app reading new_name
+    Phase 4 — Contract: DROP COLUMN old_name
+    ```
+
+    **Adding a NOT NULL column safely**:
+    ```python
+    # WRONG — locks the table for the duration of the backfill:
+    op.add_column("users", Column("plan", String, nullable=False, server_default="free"))
+
+    # RIGHT — three separate migrations:
+    # 1. Add nullable with default
+    op.add_column("users", Column("plan", String, nullable=True))
+    # 2. Backfill (batched to avoid lock escalation)
+    op.execute("UPDATE users SET plan = 'free' WHERE plan IS NULL")
+    # 3. Add NOT NULL constraint
+    op.alter_column("users", "plan", nullable=False)
+    ```
+
+    **Adding an index without locking** (PostgreSQL):
+    ```python
+    # WRONG — acquires exclusive lock, blocks reads/writes:
+    op.create_index("ix_price_history_coin_time", "price_history",
+                    ["cryptocurrency_id", "timestamp"])
+
+    # RIGHT — concurrent index creation (no lock):
+    op.execute("""
+        CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_price_history_coin_time
+        ON price_history (cryptocurrency_id, timestamp DESC)
+    """)
+    # Note: CONCURRENTLY cannot run inside a transaction — wrap with:
+    op.execute("COMMIT")  # or use with op.get_context().autocommit = True
+    ```
+
+  - **Migration testing in CI**:
+    ```python
+    # tests/test_migrations.py
+    def test_migrations_run_cleanly():
+        """Verify upgrade + downgrade cycle works without errors."""
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        command.downgrade(alembic_cfg, "base")  # verify rollback works
+        command.upgrade(alembic_cfg, "head")    # re-apply cleanly
+
+    def test_no_missing_migrations():
+        """Fail CI if a model change has no corresponding migration."""
+        # Compare autogenerate output against committed migrations
+        # If there's a diff → someone added a model field without a migration
+    ```
+
+  - **Implementation steps**:
+    - [ ] Remove `command.upgrade()` from FastAPI lifespan — it's a dev convenience,
+          not a production pattern
+    - [ ] Add `migrate` ECS task definition to Terraform (same image, `CMD alembic upgrade head`)
+    - [ ] Add migration step to CI/CD deploy job: run migrate task, wait for success,
+          then update ECS service
+    - [ ] Add `PriceHistory` migration with `CREATE INDEX CONCURRENTLY`
+    - [ ] Add `plan` column migration using expand-contract pattern
+    - [ ] `tests/test_migrations.py` — upgrade/downgrade cycle test
+    - [ ] Comment every migration: what it does, why, and whether it's zero-downtime
+
+  - **Why this matters (mention in video)**:
+    > "Running migrations on app startup is a common pattern in tutorials but a
+    > production anti-pattern. With 3 ECS tasks, you get 3 simultaneous migration
+    > attempts. Alembic's lock table prevents duplicate runs, but all 3 tasks are
+    > blocked on startup. The production pattern is a separate migration task that
+    > runs before the service update — the same way Rails uses `db:migrate` in
+    > its deploy pipeline, and the same way Kubernetes uses init containers.
+    > The expand-contract pattern for schema changes means you can ship a column
+    > rename across 3 deploys with zero downtime and zero table locks."
+
 ## Backlog
 
 - [ ] **k6 results in CI** — parse k6 JSON output and post p99 summary as a PR comment
