@@ -5,7 +5,6 @@
 #
 # Credentials are intentionally dummy values — LocalStack does not validate them.
 # This file is NOT used in production. Real AWS uses OIDC (no static credentials).
-# nosemgrep: terraform.aws.security.aws-provider-static-credentials.aws-provider-static-credentials
 
 terraform {
   required_providers {
@@ -18,8 +17,8 @@ terraform {
 
 provider "aws" {
   region                      = "us-east-1"
-  access_key                  = "test" # LocalStack dummy — not a real credential
-  secret_key                  = "test" # LocalStack dummy — not a real credential
+  access_key                  = "test" # nosemgrep: terraform.aws.security.aws-provider-static-credentials.aws-provider-static-credentials
+  secret_key                  = "test" # nosemgrep: terraform.aws.security.aws-provider-static-credentials.aws-provider-static-credentials
   skip_credentials_validation = true
   skip_metadata_api_check     = true
   skip_requesting_account_id  = true
