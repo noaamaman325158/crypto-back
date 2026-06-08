@@ -101,10 +101,33 @@ resource "aws_lb_target_group" "app" {
   health_check { path = "/health" }
 }
 
+# HTTP listener redirects all traffic to HTTPS — never forwards plaintext.
+# TLS termination happens at the ALB (HTTPS listener below) using TLS 1.2+.
+# The ECS container itself receives plain HTTP internally (private subnet).
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+# HTTPS listener with TLS 1.2+ policy — satisfies Semgrep insecure-tls rule.
+# Requires an ACM certificate ARN — set via var.certificate_arn.
+# In dev/demo environments without a cert, comment this out and use HTTP only.
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-Res-2021-06"
+  certificate_arn   = var.certificate_arn
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.app.arn
@@ -130,7 +153,7 @@ resource "aws_ecs_service" "app" {
     container_port   = 8000
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.http, aws_lb_listener.https]
 }
 
 output "app_security_group_id" { value = aws_security_group.app.id }

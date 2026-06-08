@@ -68,6 +68,7 @@ module "ecs" {
   internal_api_key   = var.internal_api_key
   anthropic_api_key  = var.anthropic_api_key
   coingecko_api_key  = var.coingecko_api_key
+  certificate_arn    = var.certificate_arn
 }
 
 output "app_url" {

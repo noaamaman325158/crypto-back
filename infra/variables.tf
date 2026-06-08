@@ -47,3 +47,8 @@ variable "coingecko_api_key" {
   default     = ""
   sensitive   = true
 }
+
+variable "certificate_arn" {
+  description = "ACM certificate ARN for HTTPS ALB listener. Required for production."
+  default     = ""
+}

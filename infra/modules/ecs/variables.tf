@@ -11,3 +11,7 @@ variable "secret_key" { sensitive = true }
 variable "internal_api_key" { sensitive = true }
 variable "anthropic_api_key" { sensitive = true }
 variable "coingecko_api_key" { sensitive = true }
+variable "certificate_arn" {
+  description = "ACM certificate ARN for HTTPS listener. Required for production."
+  default     = ""
+}
