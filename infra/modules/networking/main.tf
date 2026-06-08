@@ -6,11 +6,13 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_subnet" "public" {
-  count                   = 2
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.${count.index}.0/24"
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.${count.index}.0/24"
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  # Public IPs disabled — ECS tasks use NAT gateway for outbound, ALB handles inbound.
+  # Resources are not directly reachable from the internet via instance IP.
+  map_public_ip_on_launch = false
   tags = { Name = "${var.project_name}-public-${count.index}" }
 }
 

@@ -30,5 +30,9 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_prefix: str = "/api/v1"
 
+    # CORS — explicit list of allowed origins (never use wildcard in production)
+    # Override via CORS_ORIGINS env var: CORS_ORIGINS='["https://app.example.com"]'
+    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+
 
 settings = Settings()

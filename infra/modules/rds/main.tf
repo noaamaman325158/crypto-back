@@ -31,6 +31,10 @@ resource "aws_db_instance" "postgres" {
 
   # Production: set multi_az = true for HA; read replicas via aws_db_instance replica
   multi_az = false
+
+  # Enable PostgreSQL logs — captures slow queries, connections, and errors.
+  # Essential for auditing and incident response.
+  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
 }
 
 output "endpoint" { value = aws_db_instance.postgres.address }
