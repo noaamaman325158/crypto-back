@@ -19,14 +19,18 @@ async def lifespan(app: FastAPI):
     import logging
     logger = logging.getLogger(__name__)
 
-    # Run Alembic migrations on startup.
-    # In CI the integration test job runs migrations separately before starting
-    # the server — this is a safety net for production deployments.
+    # Run Alembic migrations in a thread executor — psycopg2 is sync and would
+    # block the event loop if called directly from an async context.
     try:
+        import asyncio as _asyncio
         from alembic import command
         from alembic.config import Config
-        alembic_cfg = Config("alembic.ini")
-        command.upgrade(alembic_cfg, "head")
+
+        def _migrate():
+            command.upgrade(Config("alembic.ini"), "head")
+
+        loop = _asyncio.get_event_loop()
+        await loop.run_in_executor(None, _migrate)
         logger.info("Alembic migrations applied")
     except Exception as e:
         logger.warning("Alembic migration skipped or failed: %s", e)

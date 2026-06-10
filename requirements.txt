@@ -6,6 +6,7 @@ uvicorn[standard]==0.32.1
 # Database
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
+psycopg2-binary==2.9.10  # sync driver for alembic migrations at startup
 alembic==1.14.0
 
 # Auth
@@ -24,6 +25,7 @@ httpx==0.28.1
 
 # Cache
 redis[asyncio]==5.2.1
+async-timeout==5.0.1  # redis[asyncio] imports this explicitly even on Python 3.11
 
 # Rate limiting
 slowapi==0.1.9
