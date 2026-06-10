@@ -198,12 +198,13 @@ jobs:
         env:
           SECRET_KEY: test-secret-key
           INTERNAL_API_KEY: test-api-key
-        run: pytest tests/unit/ -v --cov=app --cov-report=term-missing
+        run: pytest tests/unit/ -v --cov=app --cov-report=term-missing --cov-data-file=coverage.unit
       - name: Upload unit coverage data
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
           name: coverage-unit
-          path: .coverage
+          path: coverage.unit
+          if-no-files-found: error
 
   integration-db-test:
     name: Integration Tests (DB)
@@ -253,12 +254,13 @@ jobs:
           INTERNAL_API_KEY: test-api-key
           REDIS_URL: redis://localhost:6379
           ANTHROPIC_API_KEY: test-key
-        run: pytest tests/integration/ -v --cov=app --cov-report=term-missing
+        run: pytest tests/integration/ -v --cov=app --cov-report=term-missing --cov-data-file=coverage.integration
       - name: Upload integration coverage data
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
           name: coverage-integration
-          path: .coverage
+          path: coverage.integration
+          if-no-files-found: error
 
   integration-test:
     name: E2E Tests (Newman)
@@ -499,17 +501,15 @@ jobs:
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
         with:
           name: coverage-unit
-          path: coverage-data/unit
 
       - name: Download integration coverage data
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
         with:
           name: coverage-integration
-          path: coverage-data/integration
 
       - name: Merge coverage data and enforce threshold
         run: |
-          coverage combine coverage-data/unit/.coverage coverage-data/integration/.coverage
+          coverage combine coverage.unit coverage.integration
           coverage xml -o coverage.xml
           coverage report --fail-under=70
 
