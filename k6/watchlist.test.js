@@ -20,6 +20,13 @@ import { check, group, sleep } from "k6";
 import { Trend, Rate } from "k6/metrics";
 import { BASE_URL, INTERNAL_API_KEY, LOAD, SMOKE, STRESS } from "./config.js";
 
+// Tell k6 which non-2xx responses are intentional so they don't inflate
+// http_req_failed. 409 (duplicate add) and 404 (delete non-existent) are
+// expected by design; 401 (register duplicate) is also expected after iter 1.
+http.setResponseCallback(http.expectedStatuses(
+  { min: 200, max: 299 }, 401, 404, 409
+));
+
 // ── Custom metrics ────────────────────────────────────────────────────────────
 const watchlistGetLatency  = new Trend("watchlist_get_duration",  true);
 const watchlistAddLatency  = new Trend("watchlist_add_duration",  true);
