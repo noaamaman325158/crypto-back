@@ -75,7 +75,7 @@ jobs:
       - run: pip install pip-tools -q
       - name: Verify requirements.lock is up to date with requirements.txt
         run: |
-          pip-compile requirements.txt --output-file=requirements.lock.check --quiet
+          pip-compile requirements.txt --output-file=requirements.lock.check --quiet --no-strip-extras
           # Strip all comment lines (including indented ones like "    # via pkg")
           # before diffing — pip-compile regenerates header and annotation comments
           # differently based on the output filename. Only actual pinned versions matter.
