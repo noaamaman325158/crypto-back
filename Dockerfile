@@ -27,4 +27,4 @@ COPY alembic.ini ./
 EXPOSE 8000
 
 # Distroless has no shell — use python -m to resolve uvicorn without PATH lookup
-CMD ["/usr/bin/python3.11", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
