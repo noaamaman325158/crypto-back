@@ -97,17 +97,26 @@ export default function (data) {
   });
 
   group("token refresh", () => {
+    // Login fresh each iteration to get a valid refresh token.
+    // setup()'s token is consumed after the first rotation — reusing it across
+    // iterations would cause 401s that inflate http_req_failed.
+    const loginResp = http.post(`${BASE_URL}/api/v1/auth/login`,
+      JSON.stringify({ email: data.email, password: data.password }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+    const freshRefreshToken = JSON.parse(loginResp.body).refresh_token;
+
     const start = Date.now();
     const resp = http.post(`${BASE_URL}/api/v1/auth/refresh`,
-      JSON.stringify({ refresh_token: data.refreshToken }),
+      JSON.stringify({ refresh_token: freshRefreshToken }),
       { headers: { "Content-Type": "application/json" } }
     );
     refreshLatency.add(Date.now() - start);
 
     check(resp, {
-      // Refresh may return 401 under high concurrency (token rotation race)
-      // — count as success if either 200 or 401
-      "refresh responded": (r) => [200, 401].includes(r.status),
+      "refresh 200":           (r) => r.status === 200,
+      "has new access_token":  (r) => !!JSON.parse(r.body).access_token,
+      "has new refresh_token": (r) => !!JSON.parse(r.body).refresh_token,
     });
   });
 
