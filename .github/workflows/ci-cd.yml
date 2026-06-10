@@ -198,7 +198,7 @@ jobs:
         env:
           SECRET_KEY: test-secret-key
           INTERNAL_API_KEY: test-api-key
-        run: pytest tests/unit/ -v --cov=app --cov-report=term-missing --cov-data-file=coverage.unit
+        run: COVERAGE_FILE=coverage.unit pytest tests/unit/ -v --cov=app --cov-report=term-missing
       - name: Upload unit coverage data
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
@@ -254,7 +254,7 @@ jobs:
           INTERNAL_API_KEY: test-api-key
           REDIS_URL: redis://localhost:6379
           ANTHROPIC_API_KEY: test-key
-        run: pytest tests/integration/ -v --cov=app --cov-report=term-missing --cov-data-file=coverage.integration
+        run: COVERAGE_FILE=coverage.integration pytest tests/integration/ -v --cov=app --cov-report=term-missing
       - name: Upload integration coverage data
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
         with:
