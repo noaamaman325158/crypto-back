@@ -125,13 +125,14 @@ function textSummary(data) {
   const metrics = data.metrics;
   const dur = metrics.http_req_duration?.values;
   if (!dur) return "No duration data";
+  const fmt = (v) => (v != null ? v.toFixed(1) + "ms" : "n/a");
   return [
     "\n── Coins Endpoint Performance Summary ──────────────────",
-    `  p50  : ${dur["p(50)"]?.toFixed(1)}ms`,
-    `  p95  : ${dur["p(95)"]?.toFixed(1)}ms`,
-    `  p99  : ${dur["p(99)"]?.toFixed(1)}ms`,
-    `  avg  : ${dur.avg?.toFixed(1)}ms`,
-    `  max  : ${dur.max?.toFixed(1)}ms`,
+    `  p50  : ${fmt(dur["p(50)"])}`,
+    `  p95  : ${fmt(dur["p(95)"])}`,
+    `  p99  : ${fmt(dur["p(99)"])}`,
+    `  avg  : ${fmt(dur.avg)}`,
+    `  max  : ${fmt(dur.max)}`,
     `  reqs : ${metrics.http_reqs?.values.count}`,
     `  rate : ${metrics.http_reqs?.values.rate?.toFixed(1)} req/s`,
     `  errors: ${(metrics.http_req_failed?.values.rate * 100)?.toFixed(2)}%`,
