@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -5,6 +6,15 @@ import httpx
 from app.config import settings
 from app.core.cache import cache_delete_pattern, cache_get, cache_set
 from app.core.exceptions import ExternalServiceError, NotFoundError
+from app.core.metrics import (
+    cache_hits,
+    cache_misses,
+    coin_refresh_total,
+    coins_updated,
+    coingecko_errors,
+    coingecko_latency,
+    coingecko_requests,
+)
 from app.repositories.crypto_repo import CryptoRepository
 from app.schemas.cryptocurrency import HistoryResponse, PricePoint
 
@@ -23,6 +33,8 @@ class CoinGeckoClient:
         )
 
     async def fetch_markets(self, per_page: int = 100, page: int = 1) -> list[dict]:
+        coingecko_requests.labels(operation="markets").inc()
+        t0 = time.perf_counter()
         try:
             resp = await self._client.get(
                 "/coins/markets",
@@ -36,10 +48,18 @@ class CoinGeckoClient:
             )
             resp.raise_for_status()
             return resp.json()
-        except httpx.HTTPError as e:
+        except httpx.HTTPStatusError as e:
+            coingecko_errors.labels(operation="markets", status_code=str(e.response.status_code)).inc()
             raise ExternalServiceError(f"CoinGecko error: {e}")
+        except httpx.HTTPError as e:
+            coingecko_errors.labels(operation="markets", status_code="network").inc()
+            raise ExternalServiceError(f"CoinGecko error: {e}")
+        finally:
+            coingecko_latency.labels(operation="markets").observe(time.perf_counter() - t0)
 
     async def fetch_coin_detail(self, coin_id: str) -> dict:
+        coingecko_requests.labels(operation="detail").inc()
+        t0 = time.perf_counter()
         try:
             resp = await self._client.get(
                 f"/coins/{coin_id}",
@@ -48,13 +68,19 @@ class CoinGeckoClient:
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
+            coingecko_errors.labels(operation="detail", status_code=str(e.response.status_code)).inc()
             if e.response.status_code == 404:
                 raise NotFoundError(f"Coin '{coin_id}' not found on CoinGecko")
             raise ExternalServiceError(f"CoinGecko error: {e}")
         except httpx.HTTPError as e:
+            coingecko_errors.labels(operation="detail", status_code="network").inc()
             raise ExternalServiceError(f"CoinGecko error: {e}")
+        finally:
+            coingecko_latency.labels(operation="detail").observe(time.perf_counter() - t0)
 
     async def fetch_history(self, coin_id: str, days: int) -> dict:
+        coingecko_requests.labels(operation="history").inc()
+        t0 = time.perf_counter()
         try:
             resp = await self._client.get(
                 f"/coins/{coin_id}/market_chart",
@@ -63,11 +89,15 @@ class CoinGeckoClient:
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
+            coingecko_errors.labels(operation="history", status_code=str(e.response.status_code)).inc()
             if e.response.status_code == 404:
                 raise NotFoundError(f"Coin '{coin_id}' not found")
             raise ExternalServiceError(f"CoinGecko error: {e}")
         except httpx.HTTPError as e:
+            coingecko_errors.labels(operation="history", status_code="network").inc()
             raise ExternalServiceError(f"CoinGecko error: {e}")
+        finally:
+            coingecko_latency.labels(operation="history").observe(time.perf_counter() - t0)
 
     async def aclose(self):
         await self._client.aclose()
@@ -82,7 +112,9 @@ class CryptoService:
         cache_key = f"coins:list:{page}:{per_page}:{sort_by}"
         cached = await cache_get(cache_key)
         if cached:
+            cache_hits.labels(cache_key_prefix="coins:list").inc()
             return cached
+        cache_misses.labels(cache_key_prefix="coins:list").inc()
 
         coins, total = await self.repo.get_all(page=page, per_page=per_page, sort_by=sort_by)
         result = {
@@ -98,7 +130,9 @@ class CryptoService:
         cache_key = f"coins:detail:{crypto_id}"
         cached = await cache_get(cache_key)
         if cached:
+            cache_hits.labels(cache_key_prefix="coins:detail").inc()
             return cached
+        cache_misses.labels(cache_key_prefix="coins:detail").inc()
 
         coin = await self.repo.get_by_id(crypto_id)
         if not coin:
@@ -109,6 +143,7 @@ class CryptoService:
         return result
 
     async def refresh(self) -> int:
+        coin_refresh_total.inc()
         raw = await self.coingecko.fetch_markets(per_page=100)
         coins = [
             {
@@ -124,7 +159,7 @@ class CryptoService:
             for c in raw
         ]
         count = await self.repo.upsert_many(coins)
-        # Invalidate list cache after refresh
+        coins_updated.inc(count)
         await cache_delete_pattern("coins:list:*")
         return count
 
@@ -132,7 +167,9 @@ class CryptoService:
         cache_key = f"coins:history:{external_id}:{days}"
         cached = await cache_get(cache_key)
         if cached:
+            cache_hits.labels(cache_key_prefix="coins:history").inc()
             return HistoryResponse(**cached)
+        cache_misses.labels(cache_key_prefix="coins:history").inc()
 
         raw = await self.coingecko.fetch_history(external_id, days)
         prices = [

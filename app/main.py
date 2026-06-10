@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -69,6 +70,12 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+# Expose Prometheus metrics at GET /metrics.
+# Instruments every HTTP endpoint automatically: request count, latency
+# histogram, in-flight requests. Custom business metrics (cache, auth, etc.)
+# are defined in app/core/metrics.py and incremented in service code.
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 
 @app.get("/health", tags=["Health"])

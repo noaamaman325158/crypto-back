@@ -1,0 +1,137 @@
+{
+  "title": "Crypto Dashboard API",
+  "uid": "crypto-api",
+  "schemaVersion": 38,
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total[1m])) by (handler, method)",
+        "legendFormat": "{{method}} {{handler}}"
+      }]
+    },
+    {
+      "id": 2,
+      "title": "HTTP p95 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le, handler))",
+        "legendFormat": "p95 {{handler}}"
+      }]
+    },
+    {
+      "id": 3,
+      "title": "Cache Hit Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [{
+        "expr": "sum(rate(crypto_cache_hits_total[5m])) / (sum(rate(crypto_cache_hits_total[5m])) + sum(rate(crypto_cache_misses_total[5m])))",
+        "legendFormat": "Hit Rate"
+      }],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "thresholds": {
+          "steps": [
+            { "color": "red", "value": 0 },
+            { "color": "yellow", "value": 0.7 },
+            { "color": "green", "value": 0.9 }
+          ]
+        }}
+      }
+    },
+    {
+      "id": 4,
+      "title": "Cache Hits vs Misses",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(crypto_cache_hits_total[1m])) by (cache_key_prefix)", "legendFormat": "hit {{cache_key_prefix}}" },
+        { "expr": "sum(rate(crypto_cache_misses_total[1m])) by (cache_key_prefix)", "legendFormat": "miss {{cache_key_prefix}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Auth: Success vs Failure",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "targets": [{
+        "expr": "sum(rate(crypto_auth_attempts_total[1m])) by (result)",
+        "legendFormat": "{{result}}"
+      }]
+    },
+    {
+      "id": 6,
+      "title": "Token Refresh Results",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "targets": [{
+        "expr": "sum(rate(crypto_token_refresh_total[1m])) by (result)",
+        "legendFormat": "{{result}}"
+      }]
+    },
+    {
+      "id": 7,
+      "title": "CoinGecko Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 12 },
+      "targets": [{
+        "expr": "sum(rate(crypto_coingecko_requests_total[1m])) by (operation)",
+        "legendFormat": "{{operation}}"
+      }]
+    },
+    {
+      "id": 8,
+      "title": "CoinGecko p95 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 12 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(crypto_coingecko_request_duration_seconds_bucket[5m])) by (le, operation))",
+        "legendFormat": "p95 {{operation}}"
+      }]
+    },
+    {
+      "id": 9,
+      "title": "CoinGecko Errors",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 12 },
+      "targets": [{
+        "expr": "sum(rate(crypto_coingecko_errors_total[1m])) by (operation, status_code)",
+        "legendFormat": "{{operation}} {{status_code}}"
+      }]
+    },
+    {
+      "id": 10,
+      "title": "AI Insight: Cache vs Claude API",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 16 },
+      "targets": [{
+        "expr": "sum(rate(crypto_ai_insight_requests_total[1m])) by (source)",
+        "legendFormat": "{{source}}"
+      }]
+    },
+    {
+      "id": 11,
+      "title": "AI Insight p95 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 16 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(crypto_ai_insight_duration_seconds_bucket[5m])) by (le))",
+        "legendFormat": "p95"
+      }]
+    },
+    {
+      "id": 12,
+      "title": "Watchlist Operations",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 16 },
+      "targets": [{
+        "expr": "sum(rate(crypto_watchlist_operations_total[1m])) by (operation, result)",
+        "legendFormat": "{{operation}} {{result}}"
+      }]
+    }
+  ]
+}

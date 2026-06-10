@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime, timezone
 from functools import partial
 
@@ -7,6 +8,7 @@ import anthropic
 from app.config import settings
 from app.core.cache import cache_get, cache_set
 from app.core.exceptions import ExternalServiceError
+from app.core.metrics import ai_insight_latency, ai_insight_requests, cache_hits, cache_misses
 from app.schemas.cryptocurrency import InsightResponse
 
 
@@ -20,9 +22,16 @@ class AIInsightService:
         cache_key = f"insight:{coin_id}"
         cached = await cache_get(cache_key)
         if cached:
+            cache_hits.labels(cache_key_prefix="insight").inc()
+            ai_insight_requests.labels(source="cache").inc()
             return InsightResponse(**cached, cached=True)
+        cache_misses.labels(cache_key_prefix="insight").inc()
 
+        ai_insight_requests.labels(source="claude_api").inc()
+        t0 = time.perf_counter()
         insight_text = await self._generate_insight_async(coin_id, prices)
+        ai_insight_latency.observe(time.perf_counter() - t0)
+
         result = InsightResponse(
             coin_id=coin_id,
             insight=insight_text,

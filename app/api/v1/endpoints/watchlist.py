@@ -4,6 +4,8 @@ from typing import cast
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.metrics import watchlist_operations
+
 from app.api.v1.dependencies import get_current_user
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.rate_limit import LIMITS, limiter
@@ -44,9 +46,11 @@ async def add_to_watchlist(
     watchlist_repo = WatchlistRepository(db)
     existing = await watchlist_repo.get_item(current_user.id, body.cryptocurrency_id)
     if existing:
+        watchlist_operations.labels(operation="add", result="conflict").inc()
         raise ConflictError("Already in watchlist")
 
     item = await watchlist_repo.add(current_user.id, body.cryptocurrency_id)
+    watchlist_operations.labels(operation="add", result="success").inc()
     return item
 
 
@@ -61,5 +65,7 @@ async def remove_from_watchlist(
     repo = WatchlistRepository(db)
     item = await repo.get_item(current_user.id, cryptocurrency_id)
     if not item:
+        watchlist_operations.labels(operation="remove", result="not_found").inc()
         raise NotFoundError("Item not found in watchlist")
     await repo.remove(item)
+    watchlist_operations.labels(operation="remove", result="success").inc()
