@@ -1,7 +1,7 @@
 # ── Stage 1: Builder ─────────────────────────────────────────────────────────
 # Full slim image — has pip and gcc needed to compile asyncpg C extensions.
 # Pinned to bookworm (Debian 12) for reproducible, predictable base.
-FROM python:3.10-slim-bookworm AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -16,8 +16,8 @@ FROM gcr.io/distroless/python3-debian12
 
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /install/lib/python3.10/site-packages /usr/local/lib/python3.10/dist-packages
+# Copy installed packages from builder — must match the distroless Python version (3.11)
+COPY --from=builder /install/lib/python3.11/site-packages /usr/local/lib/python3.11/dist-packages
 
 # Copy application code
 COPY app/ ./app/
@@ -26,5 +26,5 @@ COPY alembic.ini ./
 
 EXPOSE 8000
 
-# Distroless has no shell — CMD must be exec form, no shell expansion
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Distroless has no shell — use python -m to resolve uvicorn without PATH lookup
+CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
