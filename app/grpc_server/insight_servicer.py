@@ -1,8 +1,8 @@
 import grpc
 
 from app.grpc_generated.crypto.insight.v1 import insight_pb2, insight_pb2_grpc
+from app.providers.coingecko import CoinGeckoProvider
 from app.services.ai_insight_service import AIInsightService
-from app.services.crypto_service import CoinGeckoClient
 
 
 class InsightServicer(insight_pb2_grpc.InsightServiceServicer):
@@ -25,13 +25,13 @@ class InsightServicer(insight_pb2_grpc.InsightServiceServicer):
         if not coin_id:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "coin_id is required")
 
-        client = CoinGeckoClient()
+        provider = CoinGeckoProvider()
         try:
-            raw = await client.fetch_history(coin_id, days=days)
+            raw = await provider.fetch_history(coin_id, days=days)
         except Exception as e:
             await context.abort(grpc.StatusCode.UNAVAILABLE, f"CoinGecko error: {e}")
         finally:
-            await client.aclose()
+            await provider.aclose()
 
         prices = [
             {"timestamp": str(ts), "price": price}

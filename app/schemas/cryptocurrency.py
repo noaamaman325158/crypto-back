@@ -107,6 +107,46 @@ class RefreshResponse(BaseModel):
     }
 
 
+class TopMoversResponse(BaseModel):
+    gainers: list[CryptocurrencyResponse]
+    losers: list[CryptocurrencyResponse]
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "gainers": [
+                    {
+                        "id": "6c3a7834-b309-478b-82b8-0982b7bab7a2",
+                        "external_id": "bitcoin",
+                        "name": "Bitcoin",
+                        "symbol": "btc",
+                        "current_price": 62404.0,
+                        "market_cap": 1251349545443.0,
+                        "price_change_percentage_24h": 8.5,
+                        "image_url": "https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png",
+                        "market_cap_rank": 1,
+                        "last_updated_at": "2024-01-15T10:30:00Z",
+                    }
+                ],
+                "losers": [
+                    {
+                        "id": "950db1ac-8549-42f9-ade1-a96c3f194483",
+                        "external_id": "ethereum",
+                        "name": "Ethereum",
+                        "symbol": "eth",
+                        "current_price": 1636.07,
+                        "market_cap": 197603888325.0,
+                        "price_change_percentage_24h": -5.2,
+                        "image_url": "https://coin-images.coingecko.com/coins/images/279/large/ethereum.png",
+                        "market_cap_rank": 2,
+                        "last_updated_at": "2024-01-15T10:30:00Z",
+                    }
+                ],
+            }
+        }
+    }
+
+
 class InsightResponse(BaseModel):
     coin_id: str
     insight: str

@@ -37,6 +37,20 @@ class CryptoRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_top_movers(self, limit: int = 5) -> tuple[list[Cryptocurrency], list[Cryptocurrency]]:
+        """Returns (gainers, losers) sorted by 24h price change, excluding nulls."""
+        base = (
+            select(Cryptocurrency)
+            .where(Cryptocurrency.price_change_percentage_24h.is_not(None))
+        )
+        gainers_result = await self.db.execute(
+            base.order_by(Cryptocurrency.price_change_percentage_24h.desc()).limit(limit)
+        )
+        losers_result = await self.db.execute(
+            base.order_by(Cryptocurrency.price_change_percentage_24h.asc()).limit(limit)
+        )
+        return list(gainers_result.scalars().all()), list(losers_result.scalars().all())
+
     async def upsert_many(self, coins: list[dict]) -> int:
         """Upsert coins by external_id. Returns count of rows affected."""
         if not coins:

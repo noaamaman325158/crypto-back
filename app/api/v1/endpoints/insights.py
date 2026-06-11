@@ -4,9 +4,9 @@ from app.api.v1.dependencies import get_current_user
 from app.core.exceptions import NotFoundError
 from app.core.rate_limit import LIMITS, limiter
 from app.models.user import User
+from app.providers.coingecko import get_crypto_provider
 from app.schemas.cryptocurrency import InsightResponse
 from app.services.ai_insight_service import AIInsightService
-from app.services.crypto_service import CoinGeckoClient
 
 router = APIRouter(prefix="/cryptocurrencies", tags=["AI Insights"])
 
@@ -23,15 +23,16 @@ async def get_coin_insight(
     Results are cached for 1 hour to minimize API cost.
     Rate limited to 10/minute — each uncached call invokes the Claude API.
     """
-    client = CoinGeckoClient()
+    provider = get_crypto_provider()
     try:
-        raw = await client.fetch_history(external_id, days=30)
+        raw = await provider.fetch_history(external_id, days=30)
         prices = [
             {"timestamp": str(ts), "price": price}
             for ts, price in raw.get("prices", [])
         ]
     finally:
-        await client.aclose()
+        await provider.aclose()
+
     if not prices:
         raise NotFoundError(f"No price history available for '{external_id}'")
 
