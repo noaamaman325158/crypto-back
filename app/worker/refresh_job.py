@@ -22,7 +22,6 @@ from prometheus_client import start_http_server
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.core.cache import cache_delete_pattern, cache_set
 from app.core.logging import get_logger, setup_logging
 from app.core.metrics import (
     coin_refresh_total,
@@ -172,7 +171,6 @@ async def _run_refresh() -> None:
                         if attempt == MAX_RETRIES:
                             refresh_failures_total.labels(batch_page=str(page)).inc()
                             async with _session_factory() as db:
-                                from app.repositories.price_history_repo import PriceHistoryRepository
                                 await PriceHistoryRepository(db).write_dead_letter(page, str(exc))
                                 await db.commit()
                         else:
@@ -189,7 +187,6 @@ async def _run_refresh() -> None:
 
         # Purge history older than 90 days (housekeeping, runs after each cycle)
         async with _session_factory() as db:
-            from app.repositories.price_history_repo import PriceHistoryRepository
             purged = await PriceHistoryRepository(db).purge_old_history(keep_days=90)
             await db.commit()
             if purged:
