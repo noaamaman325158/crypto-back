@@ -11,9 +11,10 @@ A production-grade cryptocurrency dashboard backend built with **FastAPI**, **Po
 - **Auth**: JWT (PyJWT, user-facing) + API Keys (service-to-service) + RBAC roles
 - **Caching**: Redis cache-aside pattern for coin data (60s TTL) and AI insights (1h TTL)
 - **IaC**: Full Terraform on AWS (ECS Fargate + RDS + ElastiCache) + LocalStack for local dev
-- **CI/CD**: GitHub Actions with 6-layer security gates — all before any build runs
+- **CI/CD**: GitHub Actions with 8-stage pipeline including coverage reporting and image scanning
 - **AI**: Claude API analyzes 30-day price history and returns trend insights
 - **Dual-protocol**: REST (`:8000`) + gRPC (`:50051`) served from one process — same business logic, two transports
+- **Observability**: Prometheus metrics + Grafana dashboards auto-provisioned via Docker Compose
 - **Zero CVEs**: All dependencies audited with pip-audit; python-jose replaced by PyJWT to resolve pyasn1 conflict
 
 ## Tech Stack
@@ -22,18 +23,20 @@ A production-grade cryptocurrency dashboard backend built with **FastAPI**, **Po
 |---|---|
 | Framework | FastAPI 0.136 + Uvicorn |
 | Database | PostgreSQL 16 (async via asyncpg + SQLAlchemy 2.0) |
-| ORM / Migrations | SQLAlchemy 2.0 + Alembic |
+| ORM / Migrations | SQLAlchemy 2.0 + Alembic (sync psycopg2 driver at startup) |
 | Auth | PyJWT 2.13 + bcrypt (passlib) |
 | Cache | Redis 7 |
 | Rate Limiting | slowapi |
 | External Data | CoinGecko API |
 | AI | Anthropic Claude API (claude-sonnet-4-6) |
 | gRPC | grpcio 1.68 + server reflection |
+| Metrics | Prometheus (`prometheus-fastapi-instrumentator` + `prometheus_client`) |
+| Dashboards | Grafana 11.4 (auto-provisioned) |
 | Infra | AWS ECS Fargate + RDS PostgreSQL + ElastiCache via Terraform |
 | Local AWS emulation | LocalStack 3.4 |
-| Container | Distroless Python runtime (208MB → 58MB, ~0 CVEs) |
+| Container | Distroless Python 3.11 runtime (208MB → 58MB, ~0 CVEs) |
 | CI/CD | GitHub Actions (supply-chain hardened) |
-| Dependency locking | pip-compile (requirements.lock) |
+| Dependency locking | pip-compile (requirements.lock, Python 3.11) |
 
 ## Environment Variables
 
@@ -52,7 +55,7 @@ A production-grade cryptocurrency dashboard backend built with **FastAPI**, **Po
 
 ### Prerequisites
 - Docker + Docker Compose
-- Python 3.10+
+- Python 3.11+
 
 ### With Docker Compose (recommended)
 
@@ -61,13 +64,16 @@ git clone https://github.com/noaamaman325158/crypto-back.git
 cd crypto-back
 cp .env.example .env
 # Edit .env — set ANTHROPIC_API_KEY and INTERNAL_API_KEY at minimum
-docker-compose up
+docker-compose up -d
 ```
 
 | Service | URL |
 |---|---|
 | REST API | http://localhost:8000 |
 | Swagger UI | http://localhost:8000/docs |
+| Prometheus metrics | http://localhost:8000/metrics |
+| Prometheus UI | http://localhost:9090 |
+| Grafana dashboards | http://localhost:3001 (admin / admin) |
 | gRPC | localhost:50051 |
 | LocalStack (AWS emulation) | http://localhost:4566 |
 
@@ -97,6 +103,7 @@ uvicorn app.main:app --reload
 | GET | `/api/v1/watchlist` | JWT | Get user's watchlist |
 | POST | `/api/v1/watchlist` | JWT | Add coin to watchlist |
 | DELETE | `/api/v1/watchlist/:id` | JWT | Remove coin from watchlist |
+| GET | `/metrics` | — | Prometheus metrics scrape endpoint |
 | GET | `/health` | — | Health check |
 
 ## API Usage
@@ -148,6 +155,47 @@ curl "http://localhost:8000/api/v1/cryptocurrencies/bitcoin/insight" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+## Observability
+
+The app ships a full local observability stack: Prometheus scrapes metrics from the app every 15s, and Grafana auto-provisions both the datasource and a 12-panel dashboard.
+
+### Starting the stack
+
+```bash
+docker-compose up -d app prometheus grafana
+```
+
+Open Grafana at http://localhost:3001 (admin / admin) — the **Crypto API** dashboard loads automatically with no manual setup.
+
+### Metrics collected
+
+| Category | Metrics |
+|---|---|
+| HTTP | Request rate, p95 latency, in-flight requests (via `prometheus-fastapi-instrumentator`) |
+| Cache | `cache_hits_total`, `cache_misses_total` (labelled by `cache_key_prefix`) |
+| Auth | `auth_attempts_total{result=success/failure}`, `token_refresh_total{result=success/revoked/invalid}` |
+| CoinGecko | `coingecko_requests_total`, `coingecko_latency_seconds`, `coingecko_errors_total` |
+| AI insights | `ai_insight_requests_total{source=cache/claude_api}`, `ai_insight_latency_seconds` |
+| Watchlist | `watchlist_operations_total{operation, result}` |
+| Coin refresh | `coin_refresh_total`, `coins_updated_total` |
+
+### Dashboard panels
+
+The Grafana dashboard (`grafana/dashboards/crypto_api.json`) contains 12 panels: HTTP Request Rate, HTTP p95 Latency, Cache Hit Rate, Cache Hits vs Misses, Auth Success vs Failure, Token Refresh Results, CoinGecko Request Rate, CoinGecko p95 Latency, CoinGecko Errors, AI Insight Cache vs Claude API, AI Insight p95 Latency, Watchlist Operations.
+
+### Grafana auto-provisioning
+
+Grafana is fully configured via files — no manual setup required:
+
+```
+grafana/
+  provisioning/
+    datasources/prometheus.yml   # points to http://prometheus:9090
+    dashboards/dashboards.yml    # loads dashboards from /var/lib/grafana/dashboards
+  dashboards/
+    crypto_api.json              # 12-panel dashboard
+```
+
 ## gRPC API
 
 The AI insight endpoint is also available over gRPC on port `50051`.
@@ -197,7 +245,7 @@ pytest tests/unit/ -v
 # Integration tests (requires local Postgres + Redis via docker-compose)
 pytest tests/integration/ -v --cov=app
 
-# All tests
+# All tests with combined coverage
 pytest -v --cov=app
 ```
 
@@ -209,18 +257,40 @@ pytest -v --cov=app
 | Integration | `tests/integration/` | Yes — real Postgres + Redis |
 | E2E | `postman/collection.json` | Yes — full live server via Newman |
 
+### Performance tests (k6)
+
+The `k6/` directory contains three test scenarios for each API surface (auth, coins, watchlist):
+
+| Scenario | Description |
+|---|---|
+| Smoke | 1 VU, 30s — verifies correctness at minimal load |
+| Load | 10 VUs, 2 min ramp-up — baseline performance |
+| Stress | Ramps to 50 VUs — finds the breaking point |
+
+```bash
+# Install k6: brew install k6
+
+k6 run k6/coins.test.js
+k6 run k6/auth.test.js
+k6 run k6/watchlist.test.js
+```
+
+Rate limits are multiplied by 100x when `ENVIRONMENT != production` so k6 smoke tests are not throttled by the per-minute caps.
+
 ## Dependency Management
 
-Dependencies are fully pinned via `requirements.lock` (generated by pip-compile):
+Dependencies are fully pinned via `requirements.lock` (generated by pip-compile against Python 3.11):
 
 ```bash
 # Add a new dependency
 echo "newpackage==1.2.3" >> requirements.txt
-pip-compile requirements.txt --output-file=requirements.lock
+pip-compile requirements.txt --output-file=requirements.lock --no-strip-extras
 git add requirements.txt requirements.lock
 ```
 
 The CI `lockfile-check` job enforces that `requirements.lock` is always in sync with `requirements.txt`. Builds fail if they diverge.
+
+> **Note**: Always regenerate `requirements.lock` with Python 3.11 (or via a `python:3.11-slim-bookworm` Docker container) to avoid backport packages that only apply to older Python versions.
 
 ## Local AWS Emulation (LocalStack)
 
@@ -281,18 +351,26 @@ The pipeline runs in strict stages — **no build starts until every security ga
 **Stage 2 — Code quality (parallel, after Stage 1):**
 - `lint` — Ruff
 - `type-check` — mypy
-- `unit-test` — pytest (no DB)
+- `unit-test` — pytest (no DB); uploads `coverage.unit` artifact
 
 **Stage 3 — Integration tests:**
-- pytest against real Postgres + Redis (Docker service containers)
+- pytest against real Postgres + Redis (Docker service containers); uploads `coverage.integration` artifact
 
-**Stage 4 — E2E tests:**
+**Stage 4 — Coverage report:**
+- Downloads `coverage.unit` + `coverage.integration`, combines them, enforces `--fail-under=70`, uploads merged report to Codecov
+
+**Stage 5 — E2E tests:**
 - Newman runs full Postman collection against a live server
 
-**Stage 5 — Build & deploy (main branch only):**
-- Docker image built (multi-stage, distroless runtime)
-- Tagged with commit SHA — never `latest`
-- Pushed to ECR
+**Stage 6 — Build:**
+- Docker image built (multi-stage, distroless Python 3.11 runtime), tagged with commit SHA, pushed to ECR
+
+**Stage 7 — Image scanning (Trivy):**
+- `aquasecurity/trivy-action` scans the pushed image for CVEs
+- Results uploaded as SARIF to the GitHub Security tab (always, even on failure)
+- Deploy is blocked if the scan fails
+
+**Stage 8 — Deploy (main branch only):**
 - ECS service updated (zero-downtime rolling deploy)
 
 **Supply chain hardening:**
@@ -318,7 +396,12 @@ Not all endpoints are user-facing. `/refresh` is a privileged operation called b
 `python-jose` pins `pyasn1<0.5.0` which conflicts with the CVE fix for pyasn1 (`>=0.6.3`). PyJWT is the actively maintained successor with no pyasn1 dependency and a minimal API surface change (`from jose import jwt` → `import jwt`).
 
 ### Why distroless runtime image?
-The production Docker image uses a multi-stage build: `python:3.10-slim-bookworm` for the build stage (has pip, gcc for compiling asyncpg C extensions), and `gcr.io/distroless/python3-debian12` for the runtime stage. Result: 208MB → 58MB, near-zero CVEs, no shell (attacker who gets RCE can't drop into `/bin/sh`). Trade-off: `docker exec` debugging requires ephemeral debug containers.
+The production Docker image uses a multi-stage build: `python:3.11-slim-bookworm` for the build stage (has pip, gcc for compiling asyncpg C extensions), and `gcr.io/distroless/python3-debian12` for the runtime stage. Result: 208MB → 58MB, near-zero CVEs, no shell (attacker who gets RCE can't drop into `/bin/sh`). Trade-off: `docker exec` debugging requires ephemeral debug containers.
+
+The distroless image's ENTRYPOINT is already `/usr/bin/python3.11` — `CMD` only provides arguments (`["-m", "uvicorn", "app.main:app", ...]`), not the interpreter path.
+
+### Why sync psycopg2 for Alembic migrations?
+Alembic's `command.upgrade()` is synchronous. The app runs migrations during FastAPI's async `lifespan` startup. Running sync blocking calls directly in an async context blocks the event loop and deadlocks uvicorn. The fix: `alembic/env.py` uses a fully sync psycopg2 engine (connection string swaps `asyncpg` → `psycopg2`), and `main.py` runs `command.upgrade()` inside `loop.run_in_executor(None, _migrate)` to offload the blocking call to a thread pool.
 
 ### Why dual-protocol (REST + gRPC)?
 The AI insight endpoint is served over both REST (`/api/v1/cryptocurrencies/{id}/insight`) and gRPC (`crypto.insight.v1.InsightService/GetInsight`) from the same process. Both transports call identical business logic — zero duplication. This mirrors the pattern used in Dataminr's AI microservices (agentic-search, embedding services): one service definition in `.proto`, two transports. At Dataminr's scale (30+ AI services), the REST translation is extracted into a sidecar gateway (AGL) so the protocol layer is infrastructure, not application code. For a single service, in-process is the right trade-off.

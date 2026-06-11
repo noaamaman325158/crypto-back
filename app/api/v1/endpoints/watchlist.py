@@ -4,10 +4,9 @@ from typing import cast
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.metrics import watchlist_operations
-
 from app.api.v1.dependencies import get_current_user
 from app.core.exceptions import ConflictError, NotFoundError
+from app.core.metrics import watchlist_operations
 from app.core.rate_limit import LIMITS, limiter
 from app.db.database import get_db
 from app.models.user import User

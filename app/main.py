@@ -23,6 +23,7 @@ async def lifespan(app: FastAPI):
     # block the event loop if called directly from an async context.
     try:
         import asyncio as _asyncio
+
         from alembic import command
         from alembic.config import Config
 

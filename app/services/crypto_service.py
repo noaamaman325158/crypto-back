@@ -10,10 +10,10 @@ from app.core.metrics import (
     cache_hits,
     cache_misses,
     coin_refresh_total,
-    coins_updated,
     coingecko_errors,
     coingecko_latency,
     coingecko_requests,
+    coins_updated,
 )
 from app.repositories.crypto_repo import CryptoRepository
 from app.schemas.cryptocurrency import HistoryResponse, PricePoint
