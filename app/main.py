@@ -88,4 +88,33 @@ Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "ok", "environment": settings.environment}
+    """Liveness + readiness check — verifies DB and Redis are reachable."""
+    import time
+
+    from sqlalchemy import text
+
+    from app.core.cache import get_redis
+    from app.db.database import AsyncSessionLocal
+
+    checks: dict[str, str] = {}
+
+    # DB check
+    try:
+        t0 = time.perf_counter()
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        checks["db"] = f"{round((time.perf_counter() - t0) * 1000)}ms"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+
+    # Redis check
+    try:
+        t0 = time.perf_counter()
+        r = await get_redis()
+        await r.ping()
+        checks["redis"] = f"{round((time.perf_counter() - t0) * 1000)}ms"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+
+    status = "ok" if all("error" not in v for v in checks.values()) else "degraded"
+    return {"status": status, "environment": settings.environment, "checks": checks}

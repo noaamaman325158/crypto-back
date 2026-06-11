@@ -116,3 +116,20 @@ coins_updated = Counter(
     "crypto_coins_updated_total",
     "Total coins upserted during refresh operations",
 )
+
+# ── DB connection pool metrics ────────────────────────────────────────────────
+
+db_pool_size = Gauge(
+    "crypto_db_pool_size",
+    "Total connections in the asyncpg connection pool",
+)
+
+db_pool_checked_out = Gauge(
+    "crypto_db_pool_checked_out",
+    "Connections currently checked out from the pool",
+)
+
+db_pool_overflow = Gauge(
+    "crypto_db_pool_overflow",
+    "Overflow connections currently in use (above pool_size)",
+)

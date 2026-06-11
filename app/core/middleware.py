@@ -6,9 +6,22 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.core.metrics import db_pool_checked_out, db_pool_overflow, db_pool_size
+
 logger = structlog.get_logger(__name__)
 
 _SKIP_PATHS = {"/health", "/metrics"}
+
+
+def _update_pool_metrics() -> None:
+    try:
+        from app.db.database import engine
+        pool = engine.pool
+        db_pool_size.set(pool.size())
+        db_pool_checked_out.set(pool.checkedout())
+        db_pool_overflow.set(pool.overflow())
+    except Exception:
+        pass
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -21,6 +34,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Bind request_id to all log calls within this request context
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)
+
+        _update_pool_metrics()
 
         t0 = time.perf_counter()
         status_code = 500

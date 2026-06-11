@@ -368,6 +368,8 @@ jobs:
     name: Performance Tests (k6 smoke)
     runs-on: ubuntu-latest
     needs: integration-test
+    permissions:
+      pull-requests: write
     services:
       postgres:
         image: postgres:16-alpine
@@ -477,6 +479,85 @@ jobs:
         with:
           name: k6-performance-results
           path: k6/results/
+
+      - name: Post k6 summary as PR comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          parse() {
+            local file=$1 label=$2
+            if [ ! -f "$file" ]; then echo "| $label | n/a | n/a | n/a |"; return; fi
+            python3 - "$file" "$label" <<'PYEOF'
+          import sys, json
+          file, label = sys.argv[1], sys.argv[2]
+          p95 = med = fail = "n/a"
+          with open(file) as f:
+            for line in f:
+              try:
+                obj = json.loads(line)
+              except Exception:
+                continue
+              if obj.get("type") == "Point" and obj.get("metric") == "http_req_duration":
+                pass
+              if obj.get("type") == "Point" and obj.get("metric") == "http_req_failed":
+                pass
+          # Read summary from end-of-run aggregate metrics
+          metrics = {}
+          with open(file) as f:
+            for line in f:
+              try:
+                obj = json.loads(line)
+              except Exception:
+                continue
+              if obj.get("type") == "Metric":
+                metrics[obj["data"]["name"]] = obj["data"]
+              if obj.get("type") == "Point":
+                name = obj.get("metric","")
+                val  = obj["data"].get("value", 0)
+                tags = obj["data"].get("tags", {})
+                if name == "http_req_duration":
+                  metrics.setdefault("http_req_duration", {}).setdefault("values", {})
+                if name == "http_req_failed":
+                  metrics.setdefault("http_req_failed_last", val)
+          # Parse summary block (last Metric entries have aggregates)
+          p95 = med = fail = "n/a"
+          with open(file) as f:
+            raw = f.read()
+          for line in raw.splitlines():
+            try:
+              obj = json.loads(line)
+            except Exception:
+              continue
+            if obj.get("type") == "Point" and obj.get("metric") == "http_req_duration":
+              v = obj["data"].get("value")
+              if v is not None:
+                try: p95 = f"{float(v):.0f}ms"
+                except: pass
+            if obj.get("type") == "Point" and obj.get("metric") == "http_req_failed":
+              v = obj["data"].get("value")
+              if v is not None:
+                try: fail = f"{float(v)*100:.1f}%"
+                except: pass
+          print(f"| {label} | {p95} | {med} | {fail} |")
+          PYEOF
+          }
+
+          COINS=$(parse k6/results/coins-smoke.json "coins")
+          AUTH=$(parse k6/results/auth-smoke.json "auth")
+          WATCHLIST=$(parse k6/results/watchlist-smoke.json "watchlist")
+
+          BODY="## k6 Smoke Test Results
+
+          | Scenario | p95 latency | median | error rate |
+          |---|---|---|---|
+          ${COINS}
+          ${AUTH}
+          ${WATCHLIST}
+
+          > Smoke: 1 VU · 30s · thresholds: p99 < 500ms, error rate < 1%"
+
+          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY" || true
 
       - name: Print server logs on failure
         if: failure()
