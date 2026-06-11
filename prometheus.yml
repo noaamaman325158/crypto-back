@@ -15,3 +15,8 @@ scrape_configs:
     static_configs:
       - targets: ["app:8000"]
     metrics_path: /metrics
+
+  - job_name: crypto_worker
+    static_configs:
+      - targets: ["worker:9091"]
+    metrics_path: /

@@ -117,6 +117,34 @@ coins_updated = Counter(
     "Total coins upserted during refresh operations",
 )
 
+# ── Pipeline / data freshness metrics ────────────────────────────────────────
+
+refresh_last_success_timestamp = Gauge(
+    "crypto_refresh_last_success_timestamp_seconds",
+    "Unix timestamp of the last successful scheduled refresh run",
+)
+
+refresh_coins_updated_last_run = Gauge(
+    "crypto_refresh_coins_updated_last_run",
+    "Number of coins upserted in the most recent refresh run",
+)
+
+refresh_duration_seconds = Gauge(
+    "crypto_refresh_duration_seconds",
+    "Wall-clock time of the last completed refresh run",
+)
+
+refresh_failures_total = Counter(
+    "crypto_refresh_failures_total",
+    "Number of refresh runs that failed (all retries exhausted)",
+    ["batch_page"],
+)
+
+data_age_seconds = Gauge(
+    "crypto_data_age_seconds",
+    "Seconds since the last successful coin price refresh",
+)
+
 # ── DB connection pool metrics ────────────────────────────────────────────────
 
 db_pool_size = Gauge(

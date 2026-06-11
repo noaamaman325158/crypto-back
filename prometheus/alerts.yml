@@ -1,4 +1,43 @@
 groups:
+  - name: crypto_data_pipeline
+    interval: 30s
+    rules:
+      - alert: CoinDataStale
+        expr: crypto_data_age_seconds > 600
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Coin price data is stale"
+          description: "Price data is {{ $value | humanizeDuration }} old — scheduled refresh worker may be down."
+
+      - alert: CoinDataCriticallyStale
+        expr: crypto_data_age_seconds > 1800
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Coin price data is critically stale (>30 min)"
+          description: "Price data is {{ $value | humanizeDuration }} old — scheduled refresh worker has failed."
+
+      - alert: RefreshWorkerDown
+        expr: absent(crypto_refresh_last_success_timestamp_seconds)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Coin refresh worker has not reported a successful run"
+          description: "No successful refresh timestamp found — the worker process may have crashed or never started."
+
+      - alert: RefreshBatchFailures
+        expr: increase(crypto_refresh_failures_total[30m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Refresh batch written to dead-letter queue"
+          description: "{{ $value }} refresh batch(es) failed all retries in the last 30 minutes. Check refresh_dead_letter table."
+
   - name: crypto_api_availability
     interval: 30s
     rules:

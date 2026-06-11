@@ -18,6 +18,8 @@ anyio==4.13.0
     #   httpx
     #   starlette
     #   watchfiles
+apscheduler==3.10.4
+    # via -r requirements.txt
 async-timeout==5.0.1
     # via -r requirements.txt
 asyncpg==0.30.0
@@ -189,6 +191,8 @@ python-dotenv==1.2.2
     #   uvicorn
 python-multipart==0.0.27
     # via -r requirements.txt
+pytz==2026.2
+    # via apscheduler
 pyyaml==6.0.3
     # via uvicorn
 redis[asyncio]==5.2.1
@@ -202,7 +206,9 @@ rich==15.0.0
 ruff==0.8.4
     # via -r requirements.txt
 six==1.17.0
-    # via html5lib
+    # via
+    #   apscheduler
+    #   html5lib
 slowapi==0.1.9
     # via -r requirements.txt
 sniffio==1.3.1
@@ -238,6 +244,8 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.2
     # via fastapi
+tzlocal==5.3.1
+    # via apscheduler
 urllib3==2.7.0
     # via requests
 uvicorn[standard]==0.32.1

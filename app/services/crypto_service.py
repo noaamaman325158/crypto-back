@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 
 from app.core.cache import cache_delete_pattern, cache_get, cache_get_or_set
@@ -11,6 +12,7 @@ from app.core.metrics import (
 )
 from app.providers.base import CryptoProvider
 from app.repositories.crypto_repo import CryptoRepository
+from app.repositories.price_history_repo import PriceHistoryRepository
 from app.schemas.cryptocurrency import HistoryResponse, PricePoint
 
 logger = get_logger(__name__)
@@ -63,6 +65,8 @@ class CryptoService:
         return await cache_get_or_set(cache_key, _fetch, ttl=60)
 
     async def refresh(self) -> int:
+        """On-demand refresh triggered via the internal API endpoint.
+        In the push model this is a privileged escape hatch, not the primary path."""
         coin_refresh_total.inc()
         logger.info("coin_refresh_started")
         raw = await self.provider.fetch_markets(per_page=100)
@@ -76,6 +80,7 @@ class CryptoService:
                 "price_change_percentage_24h": c.get("price_change_percentage_24h"),
                 "image_url": c.get("image"),
                 "market_cap_rank": c.get("market_cap_rank"),
+                "last_refreshed_at": datetime.now(timezone.utc),
             }
             for c in raw
         ]
@@ -86,19 +91,20 @@ class CryptoService:
         return count
 
     async def get_history(self, external_id: str, days: int) -> HistoryResponse:
+        """Serves price history from PostgreSQL (populated by the scheduled worker).
+        No CoinGecko call at request time."""
         cache_key = f"coins:history:{external_id}:{days}"
 
         async def _fetch():
             cache_misses.labels(cache_key_prefix="coins:history").inc()
             logger.debug("cache_miss", key=cache_key)
-            raw = await self.provider.fetch_history(external_id, days)
-            prices = [
-                PricePoint(
-                    timestamp=datetime.fromtimestamp(ts / 1000, tz=timezone.utc),
-                    price=price,
+            rows = await PriceHistoryRepository(self.repo.db).get_history(external_id, days)
+            if not rows:
+                raise NotFoundError(
+                    f"No price history for '{external_id}'. "
+                    "Data may not have been collected yet — check back after the next refresh cycle."
                 )
-                for ts, price in raw.get("prices", [])
-            ]
+            prices = [PricePoint(timestamp=r.recorded_at, price=r.price) for r in rows]
             result = HistoryResponse(coin_id=external_id, days=days, prices=prices)
             return result.model_dump(mode="json")
 
@@ -132,6 +138,12 @@ class CryptoService:
 
 
 def _coin_to_dict(coin) -> dict:
+    last_refreshed = getattr(coin, "last_refreshed_at", None)
+    age = (
+        int((datetime.now(timezone.utc) - last_refreshed).total_seconds())
+        if last_refreshed
+        else None
+    )
     return {
         "id": str(coin.id),
         "external_id": coin.external_id,
@@ -143,4 +155,5 @@ def _coin_to_dict(coin) -> dict:
         "image_url": coin.image_url,
         "market_cap_rank": coin.market_cap_rank,
         "last_updated_at": coin.last_updated_at.isoformat() if coin.last_updated_at else None,
+        "data_age_seconds": age,
     }

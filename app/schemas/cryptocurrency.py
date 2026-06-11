@@ -15,6 +15,7 @@ class CryptocurrencyResponse(BaseModel):
     image_url: str | None
     market_cap_rank: int | None
     last_updated_at: datetime | None
+    data_age_seconds: int | None = None
 
     model_config = {
         "from_attributes": True,

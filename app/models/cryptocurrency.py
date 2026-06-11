@@ -26,6 +26,7 @@ class Cryptocurrency(Base):
     image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     market_cap_rank: Mapped[int | None] = mapped_column(nullable=True)
     last_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

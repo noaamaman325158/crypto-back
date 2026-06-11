@@ -67,6 +67,27 @@ services:
       localstack:
         condition: service_healthy
 
+  worker:
+    build: .
+    command: ["-m", "app.worker.refresh_job"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/crypto_db
+      REDIS_URL: redis://redis:6379
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "9091:9091"  # Prometheus metrics for the worker process
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v2.53.4
     ports:

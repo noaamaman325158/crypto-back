@@ -44,6 +44,9 @@ prometheus-fastapi-instrumentator==8.0.0  # v8+ requires starlette>=1.0.0, resol
 prometheus-client==0.21.1
 structlog==24.4.0
 
+# Scheduler (worker process)
+apscheduler==3.10.4
+
 # Utils
 python-dotenv==1.2.2
 python-multipart==0.0.27
