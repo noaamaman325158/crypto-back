@@ -218,6 +218,8 @@ starlette==1.2.1
     #   -r requirements.txt
     #   fastapi
     #   prometheus-fastapi-instrumentator
+structlog==24.4.0
+    # via -r requirements.txt
 toml==0.10.2
     # via pip-audit
 typing-extensions==4.15.0

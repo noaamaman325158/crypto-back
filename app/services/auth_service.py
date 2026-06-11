@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, UnauthorizedError
+from app.core.logging import get_logger
 from app.core.metrics import auth_attempts, token_refresh_total
 from app.core.security import (
     create_access_token,
@@ -13,6 +14,8 @@ from app.models.user import User
 from app.repositories.user_repo import UserRepository
 from app.schemas.user import TokenResponse
 
+logger = get_logger(__name__)
+
 
 class AuthService:
     def __init__(self, db: AsyncSession):
@@ -21,18 +24,22 @@ class AuthService:
     async def register(self, email: str, password: str) -> User:
         if await self.repo.get_by_email(email):
             raise ConflictError("Email already registered")
-        return await self.repo.create(email=email, hashed_password=hash_password(password))
+        user = await self.repo.create(email=email, hashed_password=hash_password(password))
+        logger.info("user_registered", user_id=str(user.id), email=email)
+        return user
 
     async def login(self, email: str, password: str) -> TokenResponse:
         user = await self.repo.get_by_email(email)
         if not user or not verify_password(password, user.hashed_password):
             auth_attempts.labels(result="failure").inc()
+            logger.warning("auth_login_failed", email=email)
             raise UnauthorizedError("Invalid email or password")
 
         auth_attempts.labels(result="success").inc()
         access_token = create_access_token(str(user.id), role=user.role)
         refresh_token = create_refresh_token(str(user.id))
         await self.repo.update_refresh_token(user.id, refresh_token)
+        logger.info("auth_login_success", user_id=str(user.id))
 
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -40,17 +47,20 @@ class AuthService:
         payload = decode_token(refresh_token)
         if payload.get("type") != "refresh":
             token_refresh_total.labels(result="invalid").inc()
+            logger.warning("token_refresh_invalid_type")
             raise UnauthorizedError("Invalid token type")
 
         import uuid
         user = await self.repo.get_by_id(uuid.UUID(payload["sub"]))
         if not user or user.refresh_token != refresh_token:
             token_refresh_total.labels(result="revoked").inc()
+            logger.warning("token_refresh_revoked", user_id=payload.get("sub"))
             raise UnauthorizedError("Refresh token revoked or invalid")
 
         access_token = create_access_token(str(user.id), role=user.role)
         new_refresh = create_refresh_token(str(user.id))
         await self.repo.update_refresh_token(user.id, new_refresh)
         token_refresh_total.labels(result="success").inc()
+        logger.info("token_refresh_success", user_id=str(user.id))
 
         return TokenResponse(access_token=access_token, refresh_token=new_refresh)

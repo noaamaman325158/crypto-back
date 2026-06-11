@@ -10,15 +10,17 @@ from slowapi.errors import RateLimitExceeded
 from app.api.v1.router import router
 from app.config import settings
 from app.core.cache import close_redis
+from app.core.logging import get_logger, setup_logging
+from app.core.middleware import RequestLoggingMiddleware
 from app.core.rate_limit import limiter
 from app.grpc_server.server import serve as grpc_serve
+
+setup_logging()
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import logging
-    logger = logging.getLogger(__name__)
-
     # Run Alembic migrations in a thread executor — psycopg2 is sync and would
     # block the event loop if called directly from an async context.
     try:
@@ -32,9 +34,9 @@ async def lifespan(app: FastAPI):
 
         loop = _asyncio.get_event_loop()
         await loop.run_in_executor(None, _migrate)
-        logger.info("Alembic migrations applied")
+        logger.info("alembic_migrations_applied")
     except Exception as e:
-        logger.warning("Alembic migration skipped or failed: %s", e)
+        logger.warning("alembic_migration_failed", error=str(e))
 
     # Start gRPC server in background alongside FastAPI (REST :8000, gRPC :50051).
     # Same process, two transports — mirrors the Dataminr agentic-search pattern.
@@ -64,6 +66,7 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     # Never use wildcard — explicit origin list configured via CORS_ORIGINS env var.

@@ -8,8 +8,11 @@ import anthropic
 from app.config import settings
 from app.core.cache import cache_get, cache_set
 from app.core.exceptions import ExternalServiceError
+from app.core.logging import get_logger
 from app.core.metrics import ai_insight_latency, ai_insight_requests, cache_hits, cache_misses
 from app.schemas.cryptocurrency import InsightResponse
+
+logger = get_logger(__name__)
 
 
 class AIInsightService:
@@ -24,13 +27,17 @@ class AIInsightService:
         if cached:
             cache_hits.labels(cache_key_prefix="insight").inc()
             ai_insight_requests.labels(source="cache").inc()
+            logger.info("ai_insight_cache_hit", coin_id=coin_id)
             return InsightResponse(**cached, cached=True)
         cache_misses.labels(cache_key_prefix="insight").inc()
 
         ai_insight_requests.labels(source="claude_api").inc()
+        logger.info("ai_insight_claude_request", coin_id=coin_id, price_points=len(prices))
         t0 = time.perf_counter()
         insight_text = await self._generate_insight_async(coin_id, prices)
+        duration_ms = round((time.perf_counter() - t0) * 1000, 2)
         ai_insight_latency.observe(time.perf_counter() - t0)
+        logger.info("ai_insight_generated", coin_id=coin_id, duration_ms=duration_ms)
 
         result = InsightResponse(
             coin_id=coin_id,
@@ -52,12 +59,16 @@ class AIInsightService:
                 partial(self._generate_insight, coin_id, prices),
             )
         except anthropic.AuthenticationError as e:
+            logger.error("ai_insight_auth_error", coin_id=coin_id, error=str(e))
             raise ExternalServiceError(f"Anthropic authentication failed: {e}") from e
         except anthropic.RateLimitError as e:
+            logger.warning("ai_insight_rate_limited", coin_id=coin_id)
             raise ExternalServiceError("Anthropic rate limit exceeded — try again later") from e
         except anthropic.APIConnectionError as e:
+            logger.error("ai_insight_connection_error", coin_id=coin_id, error=str(e))
             raise ExternalServiceError(f"Anthropic unreachable: {e}") from e
         except anthropic.APIError as e:
+            logger.error("ai_insight_api_error", coin_id=coin_id, error=str(e))
             raise ExternalServiceError(f"Anthropic API error: {e}") from e
 
     def _generate_insight(self, coin_id: str, prices: list[dict]) -> str:
