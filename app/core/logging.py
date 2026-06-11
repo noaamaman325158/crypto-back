@@ -1,5 +1,6 @@
 import logging
 import sys
+from typing import Any
 
 import structlog
 
@@ -12,7 +13,7 @@ def setup_logging() -> None:
     JSON output in production (machine-readable, works with log aggregators).
     Colored console output in development (human-readable).
     """
-    shared_processors = [
+    shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
@@ -20,6 +21,7 @@ def setup_logging() -> None:
         structlog.processors.StackInfoRenderer(),
     ]
 
+    renderer: Any
     if settings.environment == "production":
         renderer = structlog.processors.JSONRenderer()
     else:

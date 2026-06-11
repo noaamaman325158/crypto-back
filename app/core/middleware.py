@@ -14,12 +14,14 @@ _SKIP_PATHS = {"/health", "/metrics"}
 
 
 def _update_pool_metrics() -> None:
+    # QueuePool exposes size/checkedout/overflow; NullPool and other pool types do not.
     try:
         from app.db.database import engine
         pool = engine.pool
-        db_pool_size.set(pool.size())
-        db_pool_checked_out.set(pool.checkedout())
-        db_pool_overflow.set(pool.overflow())
+        if hasattr(pool, "size"):
+            db_pool_size.set(pool.size())  # type: ignore[union-attr]
+            db_pool_checked_out.set(pool.checkedout())  # type: ignore[union-attr,attr-defined]
+            db_pool_overflow.set(pool.overflow())  # type: ignore[union-attr,attr-defined]
     except Exception:
         pass
 
