@@ -1,0 +1,99 @@
+groups:
+  - name: crypto_api_availability
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up{job="crypto_api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Crypto API is down"
+          description: "Prometheus cannot reach the app at app:8000/metrics for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_request_duration_seconds_count{status=~"5.."}[5m]))
+          /
+          sum(rate(http_request_duration_seconds_count[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx error rate above 5%"
+          description: "{{ $value | humanizePercentage }} of requests are returning 5xx over the last 5 minutes."
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP p95 latency above 1s"
+          description: "p95 response time is {{ $value | humanizeDuration }} over the last 5 minutes."
+
+  - name: crypto_api_auth
+    interval: 30s
+    rules:
+      - alert: HighAuthFailureRate
+        expr: |
+          sum(rate(crypto_auth_attempts_total{result="failure"}[5m]))
+          /
+          sum(rate(crypto_auth_attempts_total[5m])) > 0.3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auth failure rate above 30%"
+          description: "{{ $value | humanizePercentage }} of login attempts are failing — possible credential stuffing attack."
+
+      - alert: TokenRefreshRevoked
+        expr: rate(crypto_token_refresh_total{result="revoked"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated revoked token refresh rate"
+          description: "More than 0.1 revoked refresh attempts per second — possible token replay attack."
+
+  - name: crypto_api_cache
+    interval: 30s
+    rules:
+      - alert: LowCacheHitRate
+        expr: |
+          sum(rate(crypto_cache_hits_total[5m]))
+          /
+          (sum(rate(crypto_cache_hits_total[5m])) + sum(rate(crypto_cache_misses_total[5m]))) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache hit rate below 50%"
+          description: "Cache hit rate is {{ $value | humanizePercentage }} — Redis may be down or TTLs too short."
+
+  - name: crypto_api_external
+    interval: 30s
+    rules:
+      - alert: CoinGeckoErrors
+        expr: rate(crypto_coingecko_errors_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CoinGecko API errors elevated"
+          description: "CoinGecko is returning errors at {{ $value }} req/s — coin data may be stale."
+
+      - alert: CoinGeckoHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(crypto_coingecko_latency_seconds_bucket[5m])) by (le)
+          ) > 5.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CoinGecko p95 latency above 5s"
+          description: "CoinGecko p95 latency is {{ $value | humanizeDuration }} — external API is slow."
