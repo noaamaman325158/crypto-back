@@ -375,8 +375,11 @@ class TestHealthEndpoint:
     async def test_health_response_contract(self, client: AsyncClient):
         resp = await client.get("/health")
         body = resp.json()
-        assert body["status"] == "ok"
+        assert body["status"] in ("ok", "degraded")
         assert "environment" in body
+        assert "checks" in body
+        assert "db" in body["checks"]
+        assert "redis" in body["checks"]
 
     @pytest.mark.asyncio
     async def test_health_no_auth_required(self, client: AsyncClient):
