@@ -1,10 +1,13 @@
+import asyncio
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import require_internal_api_key
+from app.core.idempotency import check_idempotency, idempotency_key_header, store_idempotency
+from app.core.logging import get_logger
 from app.core.rate_limit import LIMITS, limiter
 from app.db.database import get_db
 from app.repositories.crypto_repo import CryptoRepository
@@ -15,6 +18,8 @@ from app.schemas.cryptocurrency import (
     RefreshResponse,
 )
 from app.services.crypto_service import CryptoService
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/cryptocurrencies", tags=["Cryptocurrencies"])
 
@@ -44,10 +49,29 @@ async def list_cryptocurrencies(
 async def refresh_cryptocurrencies(
     request: Request,
     service: CryptoService = Depends(get_crypto_service),
+    idempotency_key: str | None = Depends(idempotency_key_header),
 ):
-    """Privileged endpoint — requires X-API-Key header (service-to-service auth)."""
-    count = await service.refresh()
-    return RefreshResponse(updated=count, message=f"Refreshed {count} cryptocurrencies from CoinGecko")
+    """Privileged endpoint — requires X-API-Key header (service-to-service auth).
+
+    Supports idempotency: send `Idempotency-Key: <uuid>` to safely retry
+    without triggering duplicate CoinGecko refreshes.
+    """
+    cached = await check_idempotency(idempotency_key)
+    if cached:
+        return RefreshResponse(**cached)
+
+    # Run the refresh in a background task so the client gets 202 immediately.
+    # CoinGecko fetches can take 5–15s — no reason to hold the connection open.
+    async def _run(svc: CryptoService) -> None:
+        try:
+            await svc.refresh()
+        except Exception as e:
+            logger.error("async_refresh_failed", error=str(e))
+
+    asyncio.create_task(_run(service))
+    result = RefreshResponse(updated=0, message="Refresh started in background")
+    await store_idempotency(idempotency_key, result.model_dump(), ttl=30)
+    return Response(status_code=202)
 
 
 # IMPORTANT: /{external_id}/history MUST be registered before /{crypto_id}.

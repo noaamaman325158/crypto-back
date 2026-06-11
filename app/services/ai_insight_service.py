@@ -6,7 +6,8 @@ from functools import partial
 import anthropic
 
 from app.config import settings
-from app.core.cache import cache_get, cache_set
+from app.core.cache import cache_get, cache_get_or_set
+from app.core.circuit_breaker import claude_breaker
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.core.metrics import ai_insight_latency, ai_insight_requests, cache_hits, cache_misses
@@ -34,18 +35,22 @@ class AIInsightService:
         ai_insight_requests.labels(source="claude_api").inc()
         logger.info("ai_insight_claude_request", coin_id=coin_id, price_points=len(prices))
         t0 = time.perf_counter()
-        insight_text = await self._generate_insight_async(coin_id, prices)
-        duration_ms = round((time.perf_counter() - t0) * 1000, 2)
-        ai_insight_latency.observe(time.perf_counter() - t0)
-        logger.info("ai_insight_generated", coin_id=coin_id, duration_ms=duration_ms)
 
-        result = InsightResponse(
-            coin_id=coin_id,
-            insight=insight_text,
-            generated_at=datetime.now(timezone.utc),
-        )
-        await cache_set(cache_key, result.model_dump(mode="json"), ttl=3600)
-        return result
+        async def _generate() -> dict:
+            async with claude_breaker:
+                text = await self._generate_insight_async(coin_id, prices)
+            duration_ms = round((time.perf_counter() - t0) * 1000, 2)
+            ai_insight_latency.observe(time.perf_counter() - t0)
+            logger.info("ai_insight_generated", coin_id=coin_id, duration_ms=duration_ms)
+            result = InsightResponse(
+                coin_id=coin_id,
+                insight=text,
+                generated_at=datetime.now(timezone.utc),
+            )
+            return result.model_dump(mode="json")
+
+        raw = await cache_get_or_set(cache_key, _generate, ttl=3600)
+        return InsightResponse(**raw)
 
     async def _generate_insight_async(self, coin_id: str, prices: list[dict]) -> str:
         """

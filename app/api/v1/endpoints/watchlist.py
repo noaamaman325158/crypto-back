@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.exceptions import ConflictError, NotFoundError
+from app.core.idempotency import check_idempotency, idempotency_key_header, store_idempotency
 from app.core.metrics import watchlist_operations
 from app.core.rate_limit import LIMITS, limiter
 from app.db.database import get_db
@@ -36,7 +37,14 @@ async def add_to_watchlist(
     body: WatchlistAddRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    idempotency_key: str | None = Depends(idempotency_key_header),
 ):
+    """Supports idempotency: send `Idempotency-Key: <uuid>` to safely retry
+    without creating duplicate watchlist entries."""
+    cached = await check_idempotency(idempotency_key)
+    if cached:
+        return WatchlistItemResponse(**cached)
+
     crypto_repo = CryptoRepository(db)
     coin = await crypto_repo.get_by_id(body.cryptocurrency_id)
     if not coin:
@@ -50,6 +58,7 @@ async def add_to_watchlist(
 
     item = await watchlist_repo.add(current_user.id, body.cryptocurrency_id)
     watchlist_operations.labels(operation="add", result="success").inc()
+    await store_idempotency(idempotency_key, item.__dict__ if hasattr(item, "__dict__") else item)
     return item
 
 
