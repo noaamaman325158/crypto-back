@@ -4,18 +4,24 @@ A production-grade cryptocurrency dashboard backend built with **FastAPI**, **Po
 
 ## Architecture Highlights
 
-> **Dual-protocol AI endpoint** — The `/insight` service is exposed over both REST (port 8000) and gRPC (port 50051) from the same process. This mirrors the pattern used in Dataminr's AI services (e.g. `agentic-search`): one service, two transports, zero logic duplication. gRPC server reflection is enabled so clients can introspect available methods at runtime without a `.proto` file.
+> **Push-based data pipeline** — CoinGecko is accessed exclusively by a scheduled background worker every 5 minutes. User-facing APIs read from PostgreSQL (system of record) → Redis (write-through cache). CoinGecko outages do not affect read traffic. Every coin response includes `data_age_seconds` so clients know exactly how fresh the data is.
+
+> **Dual-protocol AI endpoint** — The `/insight` service is exposed over both REST (port 8000) and gRPC (port 50051) from the same process. This mirrors the pattern used in Dataminr's AI services: one service, two transports, zero logic duplication. gRPC server reflection is enabled so clients can introspect available methods at runtime without a `.proto` file.
 
 - **Async-first**: SQLAlchemy 2.0 async, asyncpg, httpx — no blocking I/O
 - **Layered architecture**: Router → Service → Repository — each layer has one responsibility
+- **Provider abstraction**: `CryptoProvider` ABC decouples all services from CoinGecko — swap providers by changing one factory function
 - **Auth**: JWT (PyJWT, user-facing) + API Keys (service-to-service) + RBAC roles
-- **Caching**: Redis cache-aside pattern for coin data (60s TTL) and AI insights (1h TTL)
+- **Background jobs**: APScheduler worker process refreshes 500 coins every 5 minutes with distributed Redis lock, write-through cache, dead-letter queue on failure, and 90-day history purge
+- **Idempotency**: `Idempotency-Key` header + Redis 24h TTL on mutating endpoints
+- **Caching**: Redis stampede-safe cache (`SET NX` distributed lock), write-through from worker, 60s TTL on coin data, 1h on AI insights
+- **Circuit breaker**: CLOSED/OPEN/HALF_OPEN state machine wrapping CoinGecko and Claude API calls
 - **IaC**: Full Terraform on AWS (ECS Fargate + RDS + ElastiCache) + LocalStack for local dev
 - **CI/CD**: GitHub Actions with 8-stage pipeline including coverage reporting and image scanning
 - **AI**: Claude API analyzes 30-day price history and returns trend insights
-- **Dual-protocol**: REST (`:8000`) + gRPC (`:50051`) served from one process — same business logic, two transports
-- **Observability**: Prometheus metrics + Grafana dashboards auto-provisioned via Docker Compose
-- **Zero CVEs**: All dependencies audited with pip-audit; python-jose replaced by PyJWT to resolve pyasn1 conflict
+- **Dual-protocol**: REST (`:8000`) + gRPC (`:50051`) served from one process
+- **Observability**: Prometheus metrics + Grafana dashboards + Alertmanager with 12 alert rules
+- **Zero CVEs**: All dependencies audited with pip-audit; python-jose replaced by PyJWT
 
 ## Tech Stack
 
@@ -25,13 +31,16 @@ A production-grade cryptocurrency dashboard backend built with **FastAPI**, **Po
 | Database | PostgreSQL 16 (async via asyncpg + SQLAlchemy 2.0) |
 | ORM / Migrations | SQLAlchemy 2.0 + Alembic (sync psycopg2 driver at startup) |
 | Auth | PyJWT 2.13 + bcrypt (passlib) |
-| Cache | Redis 7 |
+| Cache | Redis 7 (stampede-safe, write-through) |
 | Rate Limiting | slowapi |
-| External Data | CoinGecko API |
+| Background scheduler | APScheduler 3.10 (separate worker process) |
+| External Data | CoinGecko API (via `CryptoProvider` abstraction) |
 | AI | Anthropic Claude API (claude-sonnet-4-6) |
 | gRPC | grpcio 1.68 + server reflection |
+| Logging | structlog (JSON in prod, colored console in dev) |
 | Metrics | Prometheus (`prometheus-fastapi-instrumentator` + `prometheus_client`) |
 | Dashboards | Grafana 11.4 (auto-provisioned) |
+| Alerting | Alertmanager 0.27 (Slack routing, inhibit rules) |
 | Infra | AWS ECS Fargate + RDS PostgreSQL + ElastiCache via Terraform |
 | Local AWS emulation | LocalStack 3.4 |
 | Container | Distroless Python 3.11 runtime (208MB → 58MB, ~0 CVEs) |
@@ -71,21 +80,28 @@ docker-compose up -d
 |---|---|
 | REST API | http://localhost:8000 |
 | Swagger UI | http://localhost:8000/docs |
-| Prometheus metrics | http://localhost:8000/metrics |
+| Prometheus metrics (API) | http://localhost:8000/metrics |
+| Prometheus metrics (worker) | http://localhost:9091 |
 | Prometheus UI | http://localhost:9090 |
 | Grafana dashboards | http://localhost:3001 (admin / admin) |
+| Alertmanager | http://localhost:9093 |
 | gRPC | localhost:50051 |
 | LocalStack (AWS emulation) | http://localhost:4566 |
+
+The **worker** container starts alongside the app and runs its first refresh immediately. After ~1 second, 500 coins are in PostgreSQL and Redis — no manual seeding required.
 
 ### Without Docker
 
 ```bash
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.lock   # install from lockfile for reproducibility
+pip install -r requirements.lock
 
 # Start Postgres and Redis separately, then:
 alembic upgrade head
 uvicorn app.main:app --reload
+
+# In a second terminal — start the background refresh worker:
+python -m app.worker.refresh_job
 ```
 
 ## API Endpoints
@@ -96,23 +112,98 @@ uvicorn app.main:app --reload
 | POST | `/api/v1/auth/login` | — | Login, returns JWT + refresh token |
 | POST | `/api/v1/auth/refresh` | — | Rotate access token |
 | GET | `/api/v1/cryptocurrencies` | — | Paginated coin list (sortable) |
-| GET | `/api/v1/cryptocurrencies/:id` | — | Single coin detail |
-| POST | `/api/v1/cryptocurrencies/refresh` | `X-API-Key` | Pull fresh data from CoinGecko |
-| GET | `/api/v1/cryptocurrencies/:id/history` | — | Price history (7/30/90 days) |
-| GET | `/api/v1/cryptocurrencies/:id/insight` | JWT | Claude AI trend analysis |
+| GET | `/api/v1/cryptocurrencies/top-movers` | — | Top gainers + losers by 24h change |
+| GET | `/api/v1/cryptocurrencies/:id` | — | Single coin detail (includes `data_age_seconds`) |
+| POST | `/api/v1/cryptocurrencies/refresh` | `X-API-Key` | On-demand refresh (202, async, idempotent) |
+| GET | `/api/v1/cryptocurrencies/:external_id/history` | — | Price history from DB (7/30/90 days) |
+| GET | `/api/v1/cryptocurrencies/:external_id/insight` | JWT | Claude AI trend analysis |
 | GET | `/api/v1/watchlist` | JWT | Get user's watchlist |
-| POST | `/api/v1/watchlist` | JWT | Add coin to watchlist |
+| POST | `/api/v1/watchlist` | JWT | Add coin to watchlist (idempotent) |
 | DELETE | `/api/v1/watchlist/:id` | JWT | Remove coin from watchlist |
 | GET | `/metrics` | — | Prometheus metrics scrape endpoint |
-| GET | `/health` | — | Health check |
+| GET | `/health` | — | Deep health check (DB + Redis latency) |
+
+## Data Freshness
+
+Every coin response includes `data_age_seconds` — the number of seconds since that coin was last refreshed by the worker:
+
+```json
+{
+  "external_id": "bitcoin",
+  "current_price": 63687.0,
+  "data_age_seconds": 42,
+  ...
+}
+```
+
+The worker refreshes all 500 coins every 5 minutes. If `data_age_seconds` exceeds 600, the `CoinDataStale` Prometheus alert fires. Price history (`/history`) is served entirely from the `price_history` PostgreSQL table — no CoinGecko call at request time.
+
+## Background Worker
+
+The refresh worker runs as a **separate process** from the FastAPI app, sharing only the DB and Redis:
+
+```
+CoinGecko
+    │
+    ▼
+app/worker/refresh_job.py  (APScheduler, every 5 min)
+    │  ├── Distributed Redis lock (prevents overlap on slow runs)
+    │  ├── Paginated fetch: 2 pages × 250 coins
+    │  ├── Upsert → PostgreSQL (system of record)
+    │  ├── Append → price_history table (one row per coin per run)
+    │  ├── Write-through → Redis (TTL=310s, keys: coins:detail:*)
+    │  ├── Invalidate → coins:list:*, coins:top_movers:*
+    │  ├── Dead-letter → refresh_dead_letter table (after 3 retries)
+    │  └── Purge → price_history rows older than 90 days
+    │
+    ▼
+FastAPI (reads Redis → PostgreSQL only, never calls CoinGecko)
+```
+
+Worker exposes its own Prometheus metrics on `:9091`:
+- `crypto_refresh_last_success_timestamp_seconds` — Unix timestamp of last successful run
+- `crypto_refresh_coins_updated_last_run` — coins upserted in the most recent run
+- `crypto_refresh_duration_seconds` — wall-clock time of last run
+- `crypto_data_age_seconds` — seconds since last successful refresh (updated every 30s)
+- `crypto_refresh_failures_total` — batches written to dead-letter queue
+
+## Idempotency
+
+Mutating endpoints accept an optional `Idempotency-Key` header. Sending the same key twice within the TTL window returns the same result without executing the operation again:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/cryptocurrencies/refresh \
+  -H "X-API-Key: $INTERNAL_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)"
+# → 202 (scheduled)
+
+# Same key again within 30 seconds:
+# → 202 (deduplicated, no second CoinGecko call)
+```
+
+TTL: 30 seconds on `/refresh`, 24 hours on `/watchlist`.
+
+## Circuit Breaker
+
+CoinGecko and Claude API calls are wrapped in a circuit breaker with three states:
+
+| State | Behaviour |
+|---|---|
+| CLOSED | Normal operation — failures increment counter |
+| OPEN | All calls rejected immediately with `503` — no network I/O |
+| HALF_OPEN | One probe call allowed — success closes, failure re-opens |
+
+Thresholds: CoinGecko opens after 5 failures (30s recovery), Claude opens after 3 failures (60s recovery).
 
 ## API Usage
 
-### 1. Seed cryptocurrency data
+### 1. Data is seeded automatically
+The worker runs on startup — within ~1 second of `docker-compose up`, 500 coins are available. No manual seeding required. To trigger an immediate on-demand refresh:
+
 ```bash
-# Use the value of INTERNAL_API_KEY from your .env
 curl -X POST http://localhost:8000/api/v1/cryptocurrencies/refresh \
   -H "X-API-Key: $INTERNAL_API_KEY"
+# → 202 Accepted (refresh runs in background)
 ```
 
 ### 2. Register and login
@@ -124,14 +215,21 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
 curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email": "you@example.com", "password": "yourpassword"}'
-# → copy access_token from response
 export TOKEN=<access_token>
 ```
 
 ### 3. Browse coins
 ```bash
+# Paginated list
 curl "http://localhost:8000/api/v1/cryptocurrencies?per_page=10&sort_by=market_cap_rank"
+
+# Top movers (gainers + losers by 24h change)
+curl "http://localhost:8000/api/v1/cryptocurrencies/top-movers?limit=5"
+
+# Single coin (includes data_age_seconds)
 curl "http://localhost:8000/api/v1/cryptocurrencies/<uuid>"
+
+# Price history from DB (no external call)
 curl "http://localhost:8000/api/v1/cryptocurrencies/bitcoin/history?days=30"
 ```
 
@@ -157,59 +255,90 @@ curl "http://localhost:8000/api/v1/cryptocurrencies/bitcoin/insight" \
 
 ## Observability
 
-The app ships a full local observability stack: Prometheus scrapes metrics from the app every 15s, and Grafana auto-provisions both the datasource and a 12-panel dashboard.
+The app ships a full local observability stack. Prometheus scrapes both the API (`:8000/metrics`) and the worker (`:9091`) every 15s. Grafana auto-provisions the datasource and dashboard with no manual setup.
 
 ### Starting the stack
 
 ```bash
-docker-compose up -d app prometheus grafana
+docker-compose up -d
 ```
 
-Open Grafana at http://localhost:3001 (admin / admin) — the **Crypto API** dashboard loads automatically with no manual setup.
+Open Grafana at http://localhost:3001 (admin / admin).
 
 ### Metrics collected
 
 | Category | Metrics |
 |---|---|
-| HTTP | Request rate, p95 latency, in-flight requests (via `prometheus-fastapi-instrumentator`) |
+| HTTP | Request rate, p95 latency, in-flight requests |
 | Cache | `cache_hits_total`, `cache_misses_total` (labelled by `cache_key_prefix`) |
-| Auth | `auth_attempts_total{result=success/failure}`, `token_refresh_total{result=success/revoked/invalid}` |
+| Auth | `auth_attempts_total{result}`, `token_refresh_total{result}` |
 | CoinGecko | `coingecko_requests_total`, `coingecko_latency_seconds`, `coingecko_errors_total` |
-| AI insights | `ai_insight_requests_total{source=cache/claude_api}`, `ai_insight_latency_seconds` |
+| AI insights | `ai_insight_requests_total{source}`, `ai_insight_latency_seconds` |
 | Watchlist | `watchlist_operations_total{operation, result}` |
-| Coin refresh | `coin_refresh_total`, `coins_updated_total` |
+| Pipeline | `crypto_refresh_last_success_timestamp_seconds`, `crypto_data_age_seconds`, `crypto_refresh_coins_updated_last_run`, `crypto_refresh_duration_seconds`, `crypto_refresh_failures_total` |
+| DB pool | `crypto_db_pool_size`, `crypto_db_pool_checked_out`, `crypto_db_pool_overflow` |
+| Circuit breaker | State transitions tracked via `coingecko_errors_total` |
 
-### Dashboard panels
+### Alerting (Alertmanager)
 
-The Grafana dashboard (`grafana/dashboards/crypto_api.json`) contains 12 panels: HTTP Request Rate, HTTP p95 Latency, Cache Hit Rate, Cache Hits vs Misses, Auth Success vs Failure, Token Refresh Results, CoinGecko Request Rate, CoinGecko p95 Latency, CoinGecko Errors, AI Insight Cache vs Claude API, AI Insight p95 Latency, Watchlist Operations.
+12 alert rules across 5 groups, routed to Slack:
 
-### Grafana auto-provisioning
+| Alert | Threshold | Severity |
+|---|---|---|
+| `ServiceDown` | app unreachable > 1m | critical |
+| `HighErrorRate` | 5xx rate > 5% for 2m | critical |
+| `HighLatency` | p95 > 1s for 5m | warning |
+| `HighAuthFailureRate` | >30% login failures for 5m | warning |
+| `TokenRefreshRevoked` | >0.1/s revoked refreshes for 5m | warning |
+| `LowCacheHitRate` | hit rate < 50% for 10m | warning |
+| `CoinGeckoErrors` | >0.05/s errors for 5m | warning |
+| `CoinGeckoHighLatency` | p95 > 5s for 5m | warning |
+| `CoinDataStale` | `data_age_seconds` > 600 for 2m | warning |
+| `CoinDataCriticallyStale` | `data_age_seconds` > 1800 for 1m | critical |
+| `RefreshWorkerDown` | metric absent for 10m | critical |
+| `RefreshBatchFailures` | any dead-letter writes in 30m | warning |
 
-Grafana is fully configured via files — no manual setup required:
+Warning alerts route to `#alerts`. Critical alerts route to `#critical`. Warning inhibited by critical on the same instance.
 
+## Structured Logging
+
+All logs are emitted via `structlog`. In development, colored console output. In production (`ENVIRONMENT=production`), newline-delimited JSON — one object per log line, ready for CloudWatch Logs Insights or Datadog.
+
+Every request binds a short `request_id` to the context:
+
+```json
+{"method": "GET", "path": "/api/v1/cryptocurrencies", "status_code": 200, "duration_ms": 12.4, "request_id": "a3f2b1c4", "event": "request", "level": "info", "timestamp": "2026-06-11T19:43:26Z"}
 ```
-grafana/
-  provisioning/
-    datasources/prometheus.yml   # points to http://prometheus:9090
-    dashboards/dashboards.yml    # loads dashboards from /var/lib/grafana/dashboards
-  dashboards/
-    crypto_api.json              # 12-panel dashboard
+
+Worker logs use the same format:
+
+```json
+{"event": "refresh_completed", "total": 500, "duration_s": 0.73, "level": "info", "timestamp": "2026-06-11T19:43:27Z"}
 ```
+
+## Health Check
+
+`GET /health` performs a deep check — both DB and Redis are probed on every call:
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "database": {"status": "ok", "latency_ms": 1.2},
+    "redis":    {"status": "ok", "latency_ms": 0.4}
+  }
+}
+```
+
+Returns `200` when all checks pass, `503` when any dependency is unreachable. The `status` field is `"ok"` or `"degraded"` — never an error string, so clients can branch on a single field.
 
 ## gRPC API
 
 The AI insight endpoint is also available over gRPC on port `50051`.
 
-Server reflection is enabled — use `grpcurl` without a `.proto` file:
-
 ```bash
-# Install grpcurl: brew install grpcurl
-
 # Discover available services
 grpcurl -plaintext localhost:50051 list
-
-# Describe the InsightService
-grpcurl -plaintext localhost:50051 describe crypto.insight.v1.InsightService
 
 # Call GetInsight
 grpcurl -plaintext \
@@ -225,24 +354,21 @@ make proto
 
 ## API Documentation
 
-- **Swagger UI**: http://localhost:8000/docs
+- **Swagger UI**: http://localhost:8000/docs — all schemas include `json_schema_extra` examples
 - **ReDoc**: http://localhost:8000/redoc
 - **Postman Collection**: `postman/collection.json` — import with `postman/env.local.json`
 
-### Run Postman collection as integration tests (Newman)
 ```bash
 npx newman run postman/collection.json -e postman/env.local.json
 ```
 
-The Postman collection includes inline test scripts on every request — it is both documentation and a living test suite.
-
 ## Running Tests
 
 ```bash
-# Unit tests (no DB required — all dependencies mocked)
+# Unit tests (no DB required)
 pytest tests/unit/ -v
 
-# Integration tests (requires local Postgres + Redis via docker-compose)
+# Integration tests (requires Postgres + Redis)
 pytest tests/integration/ -v --cov=app
 
 # All tests with combined coverage
@@ -259,7 +385,11 @@ pytest -v --cov=app
 
 ### Performance tests (k6)
 
-The `k6/` directory contains three test scenarios for each API surface (auth, coins, watchlist):
+```bash
+k6 run k6/coins.test.js
+k6 run k6/auth.test.js
+k6 run k6/watchlist.test.js
+```
 
 | Scenario | Description |
 |---|---|
@@ -267,19 +397,9 @@ The `k6/` directory contains three test scenarios for each API surface (auth, co
 | Load | 10 VUs, 2 min ramp-up — baseline performance |
 | Stress | Ramps to 50 VUs — finds the breaking point |
 
-```bash
-# Install k6: brew install k6
-
-k6 run k6/coins.test.js
-k6 run k6/auth.test.js
-k6 run k6/watchlist.test.js
-```
-
-Rate limits are multiplied by 100x when `ENVIRONMENT != production` so k6 smoke tests are not throttled by the per-minute caps.
+Rate limits are multiplied by 100x when `ENVIRONMENT != production` so k6 tests are not throttled by per-minute caps.
 
 ## Dependency Management
-
-Dependencies are fully pinned via `requirements.lock` (generated by pip-compile against Python 3.11):
 
 ```bash
 # Add a new dependency
@@ -288,133 +408,72 @@ pip-compile requirements.txt --output-file=requirements.lock --no-strip-extras
 git add requirements.txt requirements.lock
 ```
 
-The CI `lockfile-check` job enforces that `requirements.lock` is always in sync with `requirements.txt`. Builds fail if they diverge.
-
-> **Note**: Always regenerate `requirements.lock` with Python 3.11 (or via a `python:3.11-slim-bookworm` Docker container) to avoid backport packages that only apply to older Python versions.
+Always regenerate `requirements.lock` with Python 3.11 (or via `python:3.11-slim-bookworm` Docker container) to avoid backport packages.
 
 ## Local AWS Emulation (LocalStack)
 
-`docker-compose up` starts LocalStack alongside the app. AWS SDK calls (SSM, ECR, etc.) are routed to `http://localhost:4566` automatically.
-
-To run Terraform against LocalStack:
 ```bash
-./scripts/tf-localstack.sh plan    # preview what would be created
-./scripts/tf-localstack.sh apply   # provision locally
-
-# Or via Make:
-make tf-localstack-plan
-make tf-localstack-apply
+./scripts/tf-localstack.sh plan
+./scripts/tf-localstack.sh apply
 ```
 
 ## Deployment (AWS)
 
-### Prerequisites
-- AWS CLI configured with appropriate permissions
-- Terraform >= 1.6
-- Docker
-
-### Provision infrastructure
-
 ```bash
 cd infra
 terraform init
-
-terraform plan \
+terraform apply \
   -var="image_tag=<git-sha>" \
   -var="db_password=<secret>" \
   -var="secret_key=<secret>" \
   -var="internal_api_key=<secret>" \
   -var="anthropic_api_key=<secret>"
-
-terraform apply
 ```
 
-Resources created: VPC, public/private subnets, ECS Fargate cluster, ALB, RDS PostgreSQL (encrypted, with CloudWatch logging), ElastiCache Redis (encrypted at rest + in transit), ECR repository, SSM Parameter Store secrets, IAM roles with OIDC for GitHub Actions.
-
-The ALB DNS is output as `app_url`. Alembic migrations run automatically on container startup.
+Resources created: VPC, ECS Fargate cluster, ALB, RDS PostgreSQL (encrypted), ElastiCache Redis (encrypted), ECR, SSM Parameter Store secrets, IAM roles with OIDC. Alembic migrations run automatically on container startup.
 
 ### CI/CD Pipeline
 
-The pipeline runs in strict stages — **no build starts until every security gate passes**.
+**Stage 1 — Security gates (parallel):** poutine (pipeline injection), TruffleHog (secrets), Semgrep (SAST), pip-audit (SCA), lockfile-check, Terraform validate
 
-**Stage 1 — Security gates (all parallel):**
+**Stage 2 — Code quality (parallel):** Ruff (lint), mypy (type-check), pytest unit tests
 
-| Job | Tool | What it catches |
-|---|---|---|
-| `pipeline-scan` | [poutine](https://github.com/boostsecurityio/poutine) | Injection vectors, dangerous triggers, unpinned actions in workflows |
-| `secret-scan` | [TruffleHog](https://github.com/trufflesecurity/trufflehog) | API keys / credentials across full git history (verified only) |
-| `sast` | [Semgrep](https://semgrep.dev) | OWASP Top 10, JWT misconfig, FastAPI-specific patterns |
-| `sca` | pip-audit | CVEs in all deps including transitive |
-| `lockfile-check` | pip-tools | `requirements.lock` out of sync with `requirements.txt` |
-| `iac-validate` | Terraform + LocalStack | Infra config errors without touching real AWS |
+**Stage 3 — Integration tests:** pytest against real Postgres + Redis
 
-**Stage 2 — Code quality (parallel, after Stage 1):**
-- `lint` — Ruff
-- `type-check` — mypy
-- `unit-test` — pytest (no DB); uploads `coverage.unit` artifact
+**Stage 4 — Coverage:** combines unit + integration artifacts, enforces `--fail-under=70`, uploads to Codecov
 
-**Stage 3 — Integration tests:**
-- pytest against real Postgres + Redis (Docker service containers); uploads `coverage.integration` artifact
+**Stage 5 — E2E:** Newman runs full Postman collection
 
-**Stage 4 — Coverage report:**
-- Downloads `coverage.unit` + `coverage.integration`, combines them, enforces `--fail-under=70`, uploads merged report to Codecov
+**Stage 6 — Build:** Docker image (multi-stage, distroless), tagged with commit SHA, pushed to ECR
 
-**Stage 5 — E2E tests:**
-- Newman runs full Postman collection against a live server
+**Stage 7 — Image scan:** Trivy CVE scan, results to GitHub Security tab (SARIF)
 
-**Stage 6 — Build:**
-- Docker image built (multi-stage, distroless Python 3.11 runtime), tagged with commit SHA, pushed to ECR
+**Stage 8 — Deploy (main only):** ECS rolling deploy, zero downtime
 
-**Stage 7 — Image scanning (Trivy):**
-- `aquasecurity/trivy-action` scans the pushed image for CVEs
-- Results uploaded as SARIF to the GitHub Security tab (always, even on failure)
-- Deploy is blocked if the scan fails
-
-**Stage 8 — Deploy (main branch only):**
-- ECS service updated (zero-downtime rolling deploy)
-
-**Supply chain hardening:**
-- All GitHub Actions pinned to immutable 40-char commit SHAs (not version tags)
-- AWS credentials via OIDC — no `AWS_ACCESS_KEY_ID` stored in GitHub Secrets
-- Docker images immutably tagged with git SHA
-- `pip-audit` scans transitive dependencies for CVEs on every push
-
-Required GitHub Secrets: `AWS_OIDC_ROLE_ARN`, `AWS_REGION`, `ECR_REPOSITORY`, `ECS_CLUSTER`, `ECS_SERVICE`, `ANTHROPIC_API_KEY`
+**Supply chain hardening:** all Actions pinned to 40-char commit SHAs, AWS via OIDC (no long-lived keys), images tagged by git SHA.
 
 ## Key Design Decisions
 
-### Why PostgreSQL over MongoDB?
-Crypto data is relational: users ↔ watchlists ↔ coins. Relational integrity, `ON CONFLICT DO UPDATE` upserts for coin refresh, and range queries on price history make Postgres the right tool. Trade-off: at billions of price history rows, TimescaleDB (a Postgres extension for time-series) would be the natural upgrade — no migration required, same driver.
+### Push-based data pipeline (no request-time provider calls)
+User-facing APIs never call CoinGecko. The scheduled worker owns all CoinGecko traffic. This eliminates CoinGecko's SLA from the API's latency profile and allows the system to serve reads during CoinGecko outages. Trade-off: data is always up to N minutes stale — `data_age_seconds` in every response makes this explicit. The `RefreshWorkerDown` alert fires if the worker stops reporting within 10 minutes.
 
-### Why Redis?
-Without caching, every `GET /cryptocurrencies` hits Postgres even though coin data changes once per minute at most. Redis is shared across all ECS task instances (unlike in-process dicts which don't survive restarts or scale out), and doubles as the rate-limit counter backend via slowapi. AI insights are cached for 1 hour — Claude API calls are expensive and the insight doesn't change minute-to-minute. Cache invalidation is explicit: `/refresh` deletes the coin list cache key immediately.
+### Provider abstraction (`CryptoProvider` ABC)
+All services depend on `app.providers.base.CryptoProvider`, not `CoinGeckoProvider` directly. To switch data sources, change `get_crypto_provider()` in `app/providers/coingecko.py`. The circuit breaker and metrics are attached at the provider layer — a new provider inherits them automatically.
 
-### Why JWT + API Keys (two auth layers)?
-Not all endpoints are user-facing. `/refresh` is a privileged operation called by schedulers or internal services — it uses `X-API-Key` header auth (validated with `hmac.compare_digest` to prevent timing attacks). User endpoints use short-lived JWTs (15 min) with refresh token rotation stored in the DB for revocation. In production at scale: service-to-service would use AWS IAM + SigV4 signing or mTLS — mentioned in code comments as the upgrade path.
+### Idempotency via Redis
+`POST /refresh` and `POST /watchlist` accept `Idempotency-Key`. The key is stored in Redis with a short TTL. Duplicate requests within the window return the same status code without side effects — safe to retry on network failures without triggering duplicate CoinGecko calls or duplicate DB writes.
 
-### Why PyJWT over python-jose?
-`python-jose` pins `pyasn1<0.5.0` which conflicts with the CVE fix for pyasn1 (`>=0.6.3`). PyJWT is the actively maintained successor with no pyasn1 dependency and a minimal API surface change (`from jose import jwt` → `import jwt`).
+### Cache stampede prevention
+`cache_get_or_set()` uses Redis `SET NX` to acquire a distributed lock before calling the factory. Only one coroutine computes the value on a cache miss — all others wait and read the populated key. Prevents a cold-cache thundering herd from amplifying into N simultaneous DB queries.
 
 ### Why distroless runtime image?
-The production Docker image uses a multi-stage build: `python:3.11-slim-bookworm` for the build stage (has pip, gcc for compiling asyncpg C extensions), and `gcr.io/distroless/python3-debian12` for the runtime stage. Result: 208MB → 58MB, near-zero CVEs, no shell (attacker who gets RCE can't drop into `/bin/sh`). Trade-off: `docker exec` debugging requires ephemeral debug containers.
+`python:3.11-slim-bookworm` for the build stage (pip, gcc for asyncpg C extensions), `gcr.io/distroless/python3-debian12` for runtime. Result: 208MB → 58MB, near-zero CVEs, no shell. The distroless ENTRYPOINT is `/usr/bin/python3.11` — `CMD` provides only arguments (`["-m", "uvicorn", ...]`), not the interpreter path. The worker uses the same image with `command: ["-m", "app.worker.refresh_job"]`.
 
-The distroless image's ENTRYPOINT is already `/usr/bin/python3.11` — `CMD` only provides arguments (`["-m", "uvicorn", "app.main:app", ...]`), not the interpreter path.
+### Why sync psycopg2 for Alembic?
+Alembic's `command.upgrade()` is synchronous. Running it inside an async lifespan blocks the event loop. Fix: `alembic/env.py` uses a psycopg2 engine, and `main.py` runs migrations in `loop.run_in_executor(None, _migrate)`.
 
-### Why sync psycopg2 for Alembic migrations?
-Alembic's `command.upgrade()` is synchronous. The app runs migrations during FastAPI's async `lifespan` startup. Running sync blocking calls directly in an async context blocks the event loop and deadlocks uvicorn. The fix: `alembic/env.py` uses a fully sync psycopg2 engine (connection string swaps `asyncpg` → `psycopg2`), and `main.py` runs `command.upgrade()` inside `loop.run_in_executor(None, _migrate)` to offload the blocking call to a thread pool.
+### Why PyJWT over python-jose?
+`python-jose` pins `pyasn1<0.5.0` which conflicts with CVE fix `>=0.6.3`. PyJWT is the maintained successor with no pyasn1 dependency.
 
-### Why dual-protocol (REST + gRPC)?
-The AI insight endpoint is served over both REST (`/api/v1/cryptocurrencies/{id}/insight`) and gRPC (`crypto.insight.v1.InsightService/GetInsight`) from the same process. Both transports call identical business logic — zero duplication. This mirrors the pattern used in Dataminr's AI microservices (agentic-search, embedding services): one service definition in `.proto`, two transports. At Dataminr's scale (30+ AI services), the REST translation is extracted into a sidecar gateway (AGL) so the protocol layer is infrastructure, not application code. For a single service, in-process is the right trade-off.
-
-### Supply Chain Security
-GitHub Actions are pinned to full 40-char commit SHAs (tags are mutable — a compromised maintainer can point a tag at malicious code). AWS credentials use OIDC, eliminating long-lived `AWS_ACCESS_KEY_ID` secrets from GitHub. Docker images are tagged with git commit SHA — deployments are reproducible and rollback is a one-line change.
-
-The pipeline itself is scanned on every push by **poutine** — the same static analysis engine that powers [SmokedMeat](https://github.com/boostsecurityio/smokedmeat), a CI/CD red team framework. If a future PR introduces a dangerous trigger or an unpinned action, the build fails before any code runs.
-
-To manually red-team the pipeline:
-```bash
-git clone https://github.com/boostsecurityio/smokedmeat.git
-cd smokedmeat
-make quickstart
-# Target: this repo | Expected: no exploitable workflows found
-```
+### Supply chain security
+All GitHub Actions pinned to 40-char commit SHAs (mutable tags are a supply chain attack vector). AWS credentials via OIDC — no `AWS_ACCESS_KEY_ID` in GitHub Secrets. Pipeline scanned on every push by **poutine**.
