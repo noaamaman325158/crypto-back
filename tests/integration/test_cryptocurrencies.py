@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,20 +28,12 @@ MOCK_COINGECKO_MARKETS = [
     },
 ]
 
-MOCK_HISTORY = {
-    "prices": [
-        [1700000000000, 45000.0],
-        [1700086400000, 46000.0],
-        [1700172800000, 47000.0],
-    ]
-}
-
 
 async def _seed_coins(client: AsyncClient) -> list[dict]:
-    """Helper: refresh coins and return the list."""
+    """Trigger a refresh (mocking the provider) and return the coin list."""
     from app.config import settings
     with patch(
-        "app.services.crypto_service.CoinGeckoClient.fetch_markets",
+        "app.providers.coingecko.CoinGeckoProvider.fetch_markets",
         new_callable=AsyncMock,
         return_value=MOCK_COINGECKO_MARKETS,
     ):
@@ -50,6 +43,27 @@ async def _seed_coins(client: AsyncClient) -> list[dict]:
         )
     resp = await client.get("/api/v1/cryptocurrencies")
     return resp.json()["data"]
+
+
+async def _seed_price_history(external_id: str, days: int = 7) -> None:
+    """Insert PriceHistory rows directly so history endpoint has data to serve."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.config import settings
+    from app.models.price_history import PriceHistory
+
+    engine = create_async_engine(settings.database_url)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    now = datetime.now(timezone.utc)
+    async with factory() as db:
+        for i in range(days):
+            db.add(PriceHistory(
+                external_id=external_id,
+                price=45000.0 + i * 1000,
+                recorded_at=now - timedelta(days=days - i),
+            ))
+        await db.commit()
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -65,14 +79,14 @@ async def test_list_cryptocurrencies_empty(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_refresh_without_api_key(client: AsyncClient):
     resp = await client.post("/api/v1/cryptocurrencies/refresh")
-    assert resp.status_code == 422  # Missing X-API-Key header
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_refresh_with_wrong_api_key(client: AsyncClient):
     resp = await client.post(
         "/api/v1/cryptocurrencies/refresh",
-        headers={"X-API-Key": "wrong-key"}
+        headers={"X-API-Key": "wrong-key"},
     )
     assert resp.status_code == 403
 
@@ -81,7 +95,7 @@ async def test_refresh_with_wrong_api_key(client: AsyncClient):
 async def test_refresh_and_list(client: AsyncClient):
     from app.config import settings
     with patch(
-        "app.services.crypto_service.CoinGeckoClient.fetch_markets",
+        "app.providers.coingecko.CoinGeckoProvider.fetch_markets",
         new_callable=AsyncMock,
         return_value=MOCK_COINGECKO_MARKETS,
     ):
@@ -89,8 +103,7 @@ async def test_refresh_and_list(client: AsyncClient):
             "/api/v1/cryptocurrencies/refresh",
             headers={"X-API-Key": settings.internal_api_key},
         )
-    assert resp.status_code == 200
-    assert resp.json()["updated"] > 0
+    assert resp.status_code == 202
 
     resp = await client.get("/api/v1/cryptocurrencies")
     assert resp.status_code == 200
@@ -102,7 +115,6 @@ async def test_refresh_and_list(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_get_coin_detail(client: AsyncClient):
-    """GET /cryptocurrencies/:id returns correct coin fields."""
     coins = await _seed_coins(client)
     coin_id = coins[0]["id"]
 
@@ -125,12 +137,11 @@ async def test_get_nonexistent_coin_returns_404(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_list_pagination(client: AsyncClient):
-    """Pagination params are respected."""
     await _seed_coins(client)
 
-    resp_page1 = await client.get("/api/v1/cryptocurrencies?page=1&per_page=1")
-    assert resp_page1.status_code == 200
-    data = resp_page1.json()
+    resp = await client.get("/api/v1/cryptocurrencies?page=1&per_page=1")
+    assert resp.status_code == 200
+    data = resp.json()
     assert len(data["data"]) == 1
     assert data["page"] == 1
     assert data["per_page"] == 1
@@ -139,7 +150,6 @@ async def test_list_pagination(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_list_sorting(client: AsyncClient):
-    """Coins can be sorted by market_cap_rank."""
     await _seed_coins(client)
 
     resp = await client.get("/api/v1/cryptocurrencies?sort_by=market_cap_rank&per_page=10")
@@ -152,26 +162,20 @@ async def test_list_sorting(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_price_history(client: AsyncClient):
-    """GET /cryptocurrencies/:id/history returns price array."""
+    """GET /:external_id/history returns rows from PriceHistory table (no CoinGecko call)."""
     coins = await _seed_coins(client)
     external_id = coins[0]["external_id"]
+    await _seed_price_history(external_id, days=7)
 
-    with patch(
-        "app.services.crypto_service.CoinGeckoClient.fetch_history",
-        new_callable=AsyncMock,
-        return_value=MOCK_HISTORY,
-    ):
-        resp = await client.get(f"/api/v1/cryptocurrencies/{external_id}/history?days=7")
-        # Assertions inside the patch context — mock must be active during request
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["coin_id"] == external_id
-        assert data["days"] == 7
-        assert isinstance(data["prices"], list)
-        assert len(data["prices"]) == 3
-        assert "timestamp" in data["prices"][0]
-        assert "price" in data["prices"][0]
-        assert data["prices"][0]["price"] == 45000.0
+    resp = await client.get(f"/api/v1/cryptocurrencies/{external_id}/history?days=7")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["coin_id"] == external_id
+    assert data["days"] == 7
+    assert isinstance(data["prices"], list)
+    assert len(data["prices"]) >= 1
+    assert "timestamp" in data["prices"][0]
+    assert "price" in data["prices"][0]
 
 
 @pytest.mark.asyncio

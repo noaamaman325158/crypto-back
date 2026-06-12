@@ -22,16 +22,18 @@ async def test_watchlist_full_flow(client: AsyncClient):
     token = await register_and_login(client, "watch@example.com")
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Seed a coin
+    # Seed a coin via mocked provider
     with patch(
-        "app.services.crypto_service.CoinGeckoClient.fetch_markets",
+        "app.providers.coingecko.CoinGeckoProvider.fetch_markets",
         new_callable=AsyncMock,
         return_value=MOCK_MARKETS,
     ):
         from app.config import settings
-        await client.post("/api/v1/cryptocurrencies/refresh", headers={"X-API-Key": settings.internal_api_key})
+        await client.post(
+            "/api/v1/cryptocurrencies/refresh",
+            headers={"X-API-Key": settings.internal_api_key},
+        )
 
-    # Get coin id
     coins_resp = await client.get("/api/v1/cryptocurrencies")
     coin_id = coins_resp.json()["data"][0]["id"]
 
@@ -69,4 +71,3 @@ async def test_watchlist_isolation(client: AsyncClient):
     resp_b = await client.get("/api/v1/watchlist", headers={"Authorization": f"Bearer {token_b}"})
     assert resp_a.status_code == 200
     assert resp_b.status_code == 200
-    # Each user only sees their own (isolated by JWT user_id)

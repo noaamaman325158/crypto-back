@@ -12,7 +12,6 @@ Covers:
 """
 
 import uuid
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -179,12 +178,11 @@ class TestCoinsValidation:
 
     @pytest.mark.asyncio
     async def test_history_valid_days_accepted(self, client: AsyncClient):
-        mock_history = {"prices": [[1700000000000, 50000.0]]}
+        from tests.integration.test_cryptocurrencies import _seed_price_history
+        await _seed_price_history("bitcoin", days=90)
         for valid in [7, 30, 90]:
-            with patch("app.services.crypto_service.CoinGeckoClient.fetch_history",
-                       new_callable=AsyncMock, return_value=mock_history):
-                resp = await client.get(f"/api/v1/cryptocurrencies/bitcoin/history?days={valid}")
-                assert resp.status_code == 200, f"days={valid} should be 200"
+            resp = await client.get(f"/api/v1/cryptocurrencies/bitcoin/history?days={valid}")
+            assert resp.status_code == 200, f"days={valid} should be 200"
 
     @pytest.mark.asyncio
     async def test_list_per_page_max_is_200(self, client: AsyncClient):
