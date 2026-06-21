@@ -13,7 +13,7 @@ A production-grade cryptocurrency dashboard backend built with **FastAPI**, **Po
 - **Provider abstraction**: `CryptoProvider` ABC decouples all services from CoinGecko — swap providers by changing one factory function
 - **Auth**: JWT (PyJWT, user-facing) + API Keys (service-to-service) + RBAC roles
 - **Background jobs**: APScheduler worker process refreshes 500 coins every 5 minutes with distributed Redis lock, write-through cache, dead-letter queue on failure, and 90-day history purge
-- **Idempotency**: `Idempotency-Key` header + Redis 24h TTL on mutating endpoints
+- **Idempotency**: `Idempotency-Key` header + Redis TTL on mutating endpoints (30s on `/refresh`, 24h on `/watchlist`)
 - **Caching**: Redis stampede-safe cache (`SET NX` distributed lock), write-through from worker, 60s TTL on coin data, 1h on AI insights
 - **Circuit breaker**: CLOSED/OPEN/HALF_OPEN state machine wrapping CoinGecko and Claude API calls
 - **IaC**: Full Terraform on AWS (ECS Fargate + RDS + ElastiCache) + LocalStack for local dev
@@ -114,7 +114,7 @@ python -m app.worker.refresh_job
 | GET | `/api/v1/cryptocurrencies` | — | Paginated coin list (sortable) |
 | GET | `/api/v1/cryptocurrencies/top-movers` | — | Top gainers + losers by 24h change |
 | GET | `/api/v1/cryptocurrencies/:id` | — | Single coin detail (includes `data_age_seconds`) |
-| POST | `/api/v1/cryptocurrencies/refresh` | `X-API-Key` | On-demand refresh (202, async, idempotent) |
+| POST | `/api/v1/cryptocurrencies/refresh` | `X-API-Key` | On-demand refresh of top 100 coins (202 no body, async, idempotent) |
 | GET | `/api/v1/cryptocurrencies/:external_id/history` | — | Price history from DB (7/30/90 days) |
 | GET | `/api/v1/cryptocurrencies/:external_id/insight` | JWT | Claude AI trend analysis |
 | GET | `/api/v1/watchlist` | JWT | Get user's watchlist |
@@ -323,6 +323,7 @@ Worker logs use the same format:
 ```json
 {
   "status": "ok",
+  "environment": "development",
   "checks": {
     "database": {"status": "ok", "latency_ms": 1.2},
     "redis":    {"status": "ok", "latency_ms": 0.4}

@@ -1,7 +1,8 @@
 import grpc
 
+from app.db.database import AsyncSessionLocal
 from app.grpc_generated.crypto.insight.v1 import insight_pb2, insight_pb2_grpc
-from app.providers.coingecko import CoinGeckoProvider
+from app.repositories.price_history_repo import PriceHistoryRepository
 from app.services.ai_insight_service import AIInsightService
 
 
@@ -25,17 +26,14 @@ class InsightServicer(insight_pb2_grpc.InsightServiceServicer):
         if not coin_id:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "coin_id is required")
 
-        provider = CoinGeckoProvider()
-        try:
-            raw = await provider.fetch_history(coin_id, days=days)
-        except Exception as e:
-            await context.abort(grpc.StatusCode.UNAVAILABLE, f"CoinGecko error: {e}")
-        finally:
-            await provider.aclose()
+        # Read price history from PostgreSQL (populated by the background worker),
+        # mirroring the REST endpoint — no CoinGecko call at request time.
+        async with AsyncSessionLocal() as db:
+            rows = await PriceHistoryRepository(db).get_history(coin_id, days=days)
 
         prices = [
-            {"timestamp": str(ts), "price": price}
-            for ts, price in raw.get("prices", [])
+            {"timestamp": r.recorded_at.isoformat(), "price": r.price}
+            for r in rows
         ]
 
         if not prices:

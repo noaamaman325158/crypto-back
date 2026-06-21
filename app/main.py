@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
@@ -89,8 +89,12 @@ Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 
 @app.get("/health", tags=["Health"])
-async def health():
-    """Liveness + readiness check — verifies DB and Redis are reachable."""
+async def health(response: Response):
+    """Deep liveness + readiness check — probes DB and Redis on every call.
+
+    Returns 200 when all dependencies pass, 503 when any is unreachable, so
+    load balancers and orchestrators can branch on the status code alone.
+    """
     import time
 
     from sqlalchemy import text
@@ -98,25 +102,37 @@ async def health():
     from app.core.cache import get_redis
     from app.db.database import AsyncSessionLocal
 
-    checks: dict[str, str] = {}
+    checks: dict[str, dict] = {}
 
     # DB check
     try:
         t0 = time.perf_counter()
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
-        checks["db"] = f"{round((time.perf_counter() - t0) * 1000)}ms"
+        checks["database"] = {
+            "status": "ok",
+            "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
     except Exception as e:
-        checks["db"] = f"error: {e}"
+        checks["database"] = {"status": "error", "error": str(e)}
 
     # Redis check
     try:
         t0 = time.perf_counter()
         r = await get_redis()
         await r.ping()
-        checks["redis"] = f"{round((time.perf_counter() - t0) * 1000)}ms"
+        checks["redis"] = {
+            "status": "ok",
+            "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
     except Exception as e:
-        checks["redis"] = f"error: {e}"
+        checks["redis"] = {"status": "error", "error": str(e)}
 
-    status = "ok" if all("error" not in v for v in checks.values()) else "degraded"
-    return {"status": status, "environment": settings.environment, "checks": checks}
+    healthy = all(c["status"] == "ok" for c in checks.values())
+    if not healthy:
+        response.status_code = 503
+    return {
+        "status": "ok" if healthy else "degraded",
+        "environment": settings.environment,
+        "checks": checks,
+    }

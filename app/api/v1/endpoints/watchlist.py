@@ -58,8 +58,12 @@ async def add_to_watchlist(
 
     item = await watchlist_repo.add(current_user.id, body.cryptocurrency_id)
     watchlist_operations.labels(operation="add", result="success").inc()
-    await store_idempotency(idempotency_key, item.__dict__ if hasattr(item, "__dict__") else item)
-    return item
+    # Serialize through the response schema so the stored value round-trips
+    # cleanly on a replay — item.__dict__ would carry _sa_instance_state and
+    # omit the loaded relationship.
+    response = WatchlistItemResponse.model_validate(item)
+    await store_idempotency(idempotency_key, response.model_dump(mode="json"))
+    return response
 
 
 @router.delete("/{cryptocurrency_id}", status_code=204)

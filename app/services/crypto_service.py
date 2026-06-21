@@ -85,7 +85,12 @@ class CryptoService:
         ]
         count = await self.repo.upsert_many(coins)
         coins_updated.inc(count)
+        # Invalidate every derived cache so the next read reflects fresh data.
+        # detail keys are write-through-populated by the worker, but an on-demand
+        # refresh changes the underlying rows, so stale detail entries must go too.
         await cache_delete_pattern("coins:list:*")
+        await cache_delete_pattern("coins:detail:*")
+        await cache_delete_pattern("coins:top_movers:*")
         logger.info("coin_refresh_completed", count=count)
         return count
 

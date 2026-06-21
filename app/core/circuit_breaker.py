@@ -17,7 +17,7 @@ import asyncio
 import time
 from enum import Enum
 
-from app.core.exceptions import CircuitOpenError
+from app.core.exceptions import CircuitOpenError, NotFoundError
 from app.core.logging import get_logger
 from app.core.metrics import Gauge
 
@@ -42,10 +42,16 @@ class CircuitBreaker:
         service: str,
         failure_threshold: int = 5,
         recovery_timeout: float = 30.0,
+        ignored_exceptions: tuple[type[BaseException], ...] = (),
     ) -> None:
         self.service = service
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
+        # Exceptions that represent a client-side condition (e.g. a 404 for a
+        # coin that doesn't exist), not a provider outage. These must not count
+        # as failures, otherwise repeated 404s would trip the breaker and block
+        # all traffic to a healthy upstream.
+        self.ignored_exceptions = ignored_exceptions
 
         self._state = State.CLOSED
         self._failure_count = 0
@@ -98,11 +104,22 @@ class CircuitBreaker:
         async with self._lock:
             if exc_type is None:
                 self._record_success()
+            elif exc_type is not None and issubclass(exc_type, self.ignored_exceptions):
+                # Client-side condition (e.g. 404) — neither a failure nor a
+                # health signal. Leave the breaker state untouched.
+                pass
             else:
                 self._record_failure()
         return False  # never suppress the exception — let caller handle it
 
 
-# Singletons — one breaker per external dependency
-coingecko_breaker = CircuitBreaker("coingecko", failure_threshold=5, recovery_timeout=30)
+# Singletons — one breaker per external dependency.
+# A 404 from CoinGecko (unknown coin) is a client-side condition, not an outage,
+# so it must not count toward opening the breaker.
+coingecko_breaker = CircuitBreaker(
+    "coingecko",
+    failure_threshold=5,
+    recovery_timeout=30,
+    ignored_exceptions=(NotFoundError,),
+)
 claude_breaker = CircuitBreaker("claude", failure_threshold=3, recovery_timeout=60)

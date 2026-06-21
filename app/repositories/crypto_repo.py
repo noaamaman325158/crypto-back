@@ -71,6 +71,10 @@ class CryptoRepository:
                 "image_url": stmt.excluded.image_url,
                 "market_cap_rank": stmt.excluded.market_cap_rank,
                 "last_updated_at": stmt.excluded.last_updated_at,
+                # Must be updated on conflict too — data_age_seconds is derived
+                # from last_refreshed_at. Omitting it here freezes the age at the
+                # first insert and makes CoinDataStale alerts fire as false positives.
+                "last_refreshed_at": stmt.excluded.last_refreshed_at,
             },
         )
         result = await self.db.execute(stmt)

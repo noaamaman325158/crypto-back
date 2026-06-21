@@ -9,20 +9,23 @@ from app.api.v1.dependencies import require_internal_api_key
 from app.core.idempotency import check_idempotency, idempotency_key_header, store_idempotency
 from app.core.logging import get_logger
 from app.core.rate_limit import LIMITS, limiter
-from app.db.database import get_db
+from app.db.database import AsyncSessionLocal, get_db
 from app.providers.coingecko import get_crypto_provider
 from app.repositories.crypto_repo import CryptoRepository
 from app.schemas.cryptocurrency import (
     CryptocurrencyResponse,
     HistoryResponse,
     PaginatedCoinsResponse,
-    RefreshResponse,
     TopMoversResponse,
 )
 from app.services.crypto_service import CryptoService
 
 router = APIRouter(prefix="/cryptocurrencies", tags=["Cryptocurrencies"])
 logger = get_logger(__name__)
+
+# Hold strong references to in-flight background refresh tasks so they are not
+# garbage-collected mid-run (asyncio only keeps a weak reference to tasks).
+_background_tasks: set[asyncio.Task] = set()
 
 
 def get_crypto_service(db: AsyncSession = Depends(get_db)) -> CryptoService:
@@ -62,14 +65,12 @@ async def get_top_movers(
 
 @router.post(
     "/refresh",
-    response_model=RefreshResponse,
     status_code=202,
     dependencies=[Depends(require_internal_api_key)],
 )
 @limiter.limit(LIMITS["coins_refresh"])
 async def refresh_cryptocurrencies(
     request: Request,
-    service: CryptoService = Depends(get_crypto_service),
     idempotency_key: str | None = Depends(idempotency_key_header),
 ):
     """Privileged endpoint — requires X-API-Key header (service-to-service auth).
@@ -84,13 +85,25 @@ async def refresh_cryptocurrencies(
     if cached:
         return Response(status_code=202)
 
-    async def _run(svc: CryptoService) -> None:
+    async def _run() -> None:
+        # Open a fresh DB session and provider for the background task. The
+        # request-scoped `service` is closed by get_db() the moment this handler
+        # returns 202, so reusing it here would run against a closed session.
         try:
-            await svc.refresh()
+            async with AsyncSessionLocal() as db:
+                provider = get_crypto_provider()
+                try:
+                    bg_service = CryptoService(CryptoRepository(db), provider)
+                    await bg_service.refresh()
+                    await db.commit()
+                finally:
+                    await provider.aclose()
         except Exception as e:
             logger.error("async_refresh_failed", error=str(e))
 
-    asyncio.create_task(_run(service))
+    task = asyncio.create_task(_run())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     await store_idempotency(idempotency_key, {"scheduled": True}, ttl=30)
     return Response(status_code=202)
 
