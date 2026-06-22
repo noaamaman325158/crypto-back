@@ -1,5 +1,3 @@
-from unittest.mock import AsyncMock, patch
-
 import pytest
 from httpx import AsyncClient
 
@@ -17,25 +15,48 @@ async def register_and_login(client: AsyncClient, email: str) -> str:
     return resp.json()["access_token"]
 
 
+async def _seed_coins(client: AsyncClient) -> list[dict]:
+    """Seed coins directly via the repository (deterministic), then read via API.
+
+    POST /refresh upserts in a fire-and-forget background task, which is
+    non-deterministic under the test loop — so we insert directly instead.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.config import settings
+    from app.repositories.crypto_repo import CryptoRepository
+
+    now = datetime.now(timezone.utc)
+    coins = [
+        {
+            "external_id": c["id"], "name": c["name"], "symbol": c["symbol"],
+            "current_price": c.get("current_price"), "market_cap": c.get("market_cap"),
+            "price_change_percentage_24h": c.get("price_change_percentage_24h"),
+            "image_url": c.get("image"), "market_cap_rank": c.get("market_cap_rank"),
+            "last_refreshed_at": now,
+        }
+        for c in MOCK_MARKETS
+    ]
+    engine = create_async_engine(settings.database_url)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as db:
+        await CryptoRepository(db).upsert_many(coins)
+        await db.commit()
+    await engine.dispose()
+
+    resp = await client.get("/api/v1/cryptocurrencies")
+    return resp.json()["data"]
+
+
 @pytest.mark.asyncio
 async def test_watchlist_full_flow(client: AsyncClient):
     token = await register_and_login(client, "watch@example.com")
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Seed a coin via mocked provider
-    with patch(
-        "app.providers.coingecko.CoinGeckoProvider.fetch_markets",
-        new_callable=AsyncMock,
-        return_value=MOCK_MARKETS,
-    ):
-        from app.config import settings
-        await client.post(
-            "/api/v1/cryptocurrencies/refresh",
-            headers={"X-API-Key": settings.internal_api_key},
-        )
-
-    coins_resp = await client.get("/api/v1/cryptocurrencies")
-    coin_id = coins_resp.json()["data"][0]["id"]
+    coins = await _seed_coins(client)
+    coin_id = coins[0]["id"]
 
     # Add to watchlist
     resp = await client.post("/api/v1/watchlist", json={"cryptocurrency_id": coin_id}, headers=headers)

@@ -366,6 +366,8 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_health_returns_200(self, client: AsyncClient):
+        # In tests DB and Redis are reachable, so health is "ok" → 200.
+        # (A failing dependency now returns 503 — see test below.)
         resp = await client.get("/health")
         assert resp.status_code == 200
 
@@ -376,8 +378,25 @@ class TestHealthEndpoint:
         assert body["status"] in ("ok", "degraded")
         assert "environment" in body
         assert "checks" in body
-        assert "db" in body["checks"]
+        # New nested contract: each dependency reports a structured status object.
+        assert "database" in body["checks"]
         assert "redis" in body["checks"]
+        assert body["checks"]["database"]["status"] in ("ok", "error")
+        # On a healthy check, latency_ms is present; on error, an error string is.
+        db_check = body["checks"]["database"]
+        assert "latency_ms" in db_check or "error" in db_check
+
+    @pytest.mark.asyncio
+    async def test_health_returns_503_when_dependency_down(self, client: AsyncClient):
+        """When a dependency is unreachable, /health must return 503 + degraded."""
+        from unittest.mock import patch
+
+        with patch("app.db.database.AsyncSessionLocal", side_effect=RuntimeError("db down")):
+            resp = await client.get("/health")
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["status"] == "degraded"
+        assert body["checks"]["database"]["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_health_no_auth_required(self, client: AsyncClient):
