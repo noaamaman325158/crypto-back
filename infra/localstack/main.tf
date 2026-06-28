@@ -92,5 +92,5 @@ module "ecs" {
   internal_api_key   = var.internal_api_key
   anthropic_api_key  = var.anthropic_api_key
   coingecko_api_key  = var.coingecko_api_key
-  certificate_arn    = ""  # Not used in LocalStack — TLS handled externally in production
+  certificate_arn    = "" # Not used in LocalStack — TLS handled externally in production
 }

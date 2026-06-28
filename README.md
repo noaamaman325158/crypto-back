@@ -431,7 +431,7 @@ terraform apply \
   -var="anthropic_api_key=<secret>"
 ```
 
-Resources created: VPC, ECS Fargate cluster, ALB, RDS PostgreSQL (encrypted), ElastiCache Redis (encrypted), ECR, SSM Parameter Store secrets, IAM roles with OIDC. Alembic migrations run automatically on container startup.
+Resources created: VPC, ECS Fargate cluster, **two ECS services — the API (behind the ALB) and the refresh worker** (private subnets, metrics on `:9091`), ALB, RDS PostgreSQL (encrypted), ElastiCache Redis (encrypted), ECR, SSM Parameter Store secrets, IAM roles with OIDC. Alembic migrations run automatically on API container startup.
 
 ### CI/CD Pipeline
 

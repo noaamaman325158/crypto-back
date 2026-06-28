@@ -1,9 +1,9 @@
 resource "aws_ecr_repository" "app" {
   name                 = var.project_name
-  image_tag_mutability = "IMMUTABLE"  # Immutable tags — images can't be overwritten
+  image_tag_mutability = "IMMUTABLE" # Immutable tags — images can't be overwritten
 
   image_scanning_configuration {
-    scan_on_push = true  # Automatic vulnerability scanning on every push
+    scan_on_push = true # Automatic vulnerability scanning on every push
   }
 
   encryption_configuration {

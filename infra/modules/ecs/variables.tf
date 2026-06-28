@@ -4,7 +4,9 @@ variable "image_uri" {}
 variable "execution_role_arn" {}
 variable "task_role_arn" {}
 variable "vpc_id" {}
+variable "vpc_cidr" { default = "10.0.0.0/16" }
 variable "public_subnet_ids" { type = list(string) }
+variable "private_subnet_ids" { type = list(string) }
 variable "database_url" { sensitive = true }
 variable "redis_url" {}
 variable "secret_key" { sensitive = true }

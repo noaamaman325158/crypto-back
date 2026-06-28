@@ -34,19 +34,19 @@ resource "aws_ecs_task_definition" "app" {
   task_role_arn            = var.task_role_arn
 
   container_definitions = jsonencode([{
-    name  = "app"
-    image = var.image_uri
+    name         = "app"
+    image        = var.image_uri
     portMappings = [{ containerPort = 8000, protocol = "tcp" }]
     environment = [
-      { name = "DATABASE_URL",      value = var.database_url },
-      { name = "REDIS_URL",         value = var.redis_url },
-      { name = "ENVIRONMENT",       value = var.environment },
+      { name = "DATABASE_URL", value = var.database_url },
+      { name = "REDIS_URL", value = var.redis_url },
+      { name = "ENVIRONMENT", value = var.environment },
     ]
     secrets = [
-      { name = "SECRET_KEY",         valueFrom = aws_ssm_parameter.secret_key.arn },
-      { name = "INTERNAL_API_KEY",   valueFrom = aws_ssm_parameter.internal_api_key.arn },
-      { name = "ANTHROPIC_API_KEY",  valueFrom = aws_ssm_parameter.anthropic_api_key.arn },
-      { name = "COINGECKO_API_KEY",  valueFrom = aws_ssm_parameter.coingecko_api_key.arn },
+      { name = "SECRET_KEY", valueFrom = aws_ssm_parameter.secret_key.arn },
+      { name = "INTERNAL_API_KEY", valueFrom = aws_ssm_parameter.internal_api_key.arn },
+      { name = "ANTHROPIC_API_KEY", valueFrom = aws_ssm_parameter.anthropic_api_key.arn },
+      { name = "COINGECKO_API_KEY", valueFrom = aws_ssm_parameter.coingecko_api_key.arn },
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -156,5 +156,90 @@ resource "aws_ecs_service" "app" {
   depends_on = [aws_lb_listener.http, aws_lb_listener.https]
 }
 
+# ── Refresh worker ────────────────────────────────────────────────────────────
+# The push-based pipeline depends on a long-running worker process that fetches
+# CoinGecko data every 5 minutes and write-throughs to Postgres/Redis. Without it
+# deployed, data goes stale and CoinDataStale fires. It runs as a SEPARATE ECS
+# service (same image, different command) — no ALB, no public ingress; it only
+# needs outbound access to CoinGecko/Anthropic and DB/Redis. Metrics on :9091 are
+# reachable only inside the VPC for Prometheus to scrape.
+
+resource "aws_security_group" "worker" {
+  name   = "${var.project_name}-worker-sg"
+  vpc_id = var.vpc_id
+
+  # Prometheus (in-VPC) scrapes worker metrics on :9091. No public ingress.
+  ingress {
+    from_port   = 9091
+    to_port     = 9091
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_cloudwatch_log_group" "worker" {
+  name              = "/ecs/${var.project_name}-worker"
+  retention_in_days = 30
+}
+
+resource "aws_ecs_task_definition" "worker" {
+  family                   = "${var.project_name}-worker"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = var.execution_role_arn
+  task_role_arn            = var.task_role_arn
+
+  container_definitions = jsonencode([{
+    name         = "worker"
+    image        = var.image_uri
+    command      = ["-m", "app.worker.refresh_job"]
+    portMappings = [{ containerPort = 9091, protocol = "tcp" }]
+    environment = [
+      { name = "DATABASE_URL", value = var.database_url },
+      { name = "REDIS_URL", value = var.redis_url },
+      { name = "ENVIRONMENT", value = var.environment },
+    ]
+    secrets = [
+      { name = "SECRET_KEY", valueFrom = aws_ssm_parameter.secret_key.arn },
+      { name = "INTERNAL_API_KEY", valueFrom = aws_ssm_parameter.internal_api_key.arn },
+      { name = "ANTHROPIC_API_KEY", valueFrom = aws_ssm_parameter.anthropic_api_key.arn },
+      { name = "COINGECKO_API_KEY", valueFrom = aws_ssm_parameter.coingecko_api_key.arn },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.worker.name
+        "awslogs-region"        = "us-east-1"
+        "awslogs-stream-prefix" = "ecs"
+      }
+    }
+  }])
+}
+
+resource "aws_ecs_service" "worker" {
+  name            = "${var.project_name}-worker-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.worker.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  # Single instance: the worker already self-guards against overlap with a
+  # distributed Redis lock, but one task is the intended steady state.
+  network_configuration {
+    subnets          = var.private_subnet_ids
+    security_groups  = [aws_security_group.worker.id]
+    assign_public_ip = false
+  }
+}
+
 output "app_security_group_id" { value = aws_security_group.app.id }
-output "load_balancer_dns"     { value = aws_lb.main.dns_name }
+output "worker_security_group_id" { value = aws_security_group.worker.id }
+output "load_balancer_dns" { value = aws_lb.main.dns_name }

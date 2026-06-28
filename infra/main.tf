@@ -30,13 +30,14 @@ module "ecr" {
 }
 
 module "rds" {
-  source            = "./modules/rds"
-  project_name      = var.project_name
-  environment       = var.environment
-  db_password       = var.db_password
-  subnet_ids        = module.networking.private_subnet_ids
-  vpc_id            = module.networking.vpc_id
-  app_sg_id         = module.ecs.app_security_group_id
+  source       = "./modules/rds"
+  project_name = var.project_name
+  environment  = var.environment
+  db_password  = var.db_password
+  subnet_ids   = module.networking.private_subnet_ids
+  vpc_id       = module.networking.vpc_id
+  app_sg_id    = module.ecs.app_security_group_id
+  worker_sg_id = module.ecs.worker_security_group_id
 }
 
 module "elasticache" {
@@ -45,6 +46,7 @@ module "elasticache" {
   subnet_ids   = module.networking.private_subnet_ids
   vpc_id       = module.networking.vpc_id
   app_sg_id    = module.ecs.app_security_group_id
+  worker_sg_id = module.ecs.worker_security_group_id
 }
 
 module "iam" {
@@ -61,7 +63,9 @@ module "ecs" {
   execution_role_arn = module.iam.execution_role_arn
   task_role_arn      = module.iam.task_role_arn
   vpc_id             = module.networking.vpc_id
+  vpc_cidr           = module.networking.vpc_cidr
   public_subnet_ids  = module.networking.public_subnet_ids
+  private_subnet_ids = module.networking.private_subnet_ids
   database_url       = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${module.rds.endpoint}/crypto_db"
   redis_url          = "redis://${module.elasticache.endpoint}:6379"
   secret_key         = var.secret_key

@@ -2,7 +2,7 @@ resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
-  tags = { Name = "${var.project_name}-vpc" }
+  tags                 = { Name = "${var.project_name}-vpc" }
 }
 
 resource "aws_subnet" "public" {
@@ -13,7 +13,7 @@ resource "aws_subnet" "public" {
   # Public IPs disabled — ECS tasks use NAT gateway for outbound, ALB handles inbound.
   # Resources are not directly reachable from the internet via instance IP.
   map_public_ip_on_launch = false
-  tags = { Name = "${var.project_name}-public-${count.index}" }
+  tags                    = { Name = "${var.project_name}-public-${count.index}" }
 }
 
 resource "aws_subnet" "private" {
@@ -21,7 +21,7 @@ resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.${count.index + 10}.0/24"
   availability_zone = data.aws_availability_zones.available.names[count.index]
-  tags = { Name = "${var.project_name}-private-${count.index}" }
+  tags              = { Name = "${var.project_name}-private-${count.index}" }
 }
 
 resource "aws_internet_gateway" "main" {
@@ -44,6 +44,7 @@ resource "aws_route_table_association" "public" {
 
 data "aws_availability_zones" "available" {}
 
-output "vpc_id"             { value = aws_vpc.main.id }
-output "public_subnet_ids"  { value = aws_subnet.public[*].id }
+output "vpc_id" { value = aws_vpc.main.id }
+output "vpc_cidr" { value = aws_vpc.main.cidr_block }
+output "public_subnet_ids" { value = aws_subnet.public[*].id }
 output "private_subnet_ids" { value = aws_subnet.private[*].id }

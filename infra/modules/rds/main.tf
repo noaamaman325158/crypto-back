@@ -7,10 +7,11 @@ resource "aws_security_group" "rds" {
   name   = "${var.project_name}-rds-sg"
   vpc_id = var.vpc_id
   ingress {
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [var.app_sg_id]
+    from_port = 5432
+    to_port   = 5432
+    protocol  = "tcp"
+    # Both the API and the refresh worker need DB access.
+    security_groups = compact([var.app_sg_id, var.worker_sg_id])
   }
 }
 
@@ -18,7 +19,7 @@ resource "aws_db_instance" "postgres" {
   identifier             = "${var.project_name}-${var.environment}"
   engine                 = "postgres"
   engine_version         = "16"
-  instance_class         = "db.t3.micro"  # Free-tier eligible; upgrade to db.t3.small+ for prod
+  instance_class         = "db.t3.micro" # Free-tier eligible; upgrade to db.t3.small+ for prod
   allocated_storage      = 20
   db_name                = "crypto_db"
   username               = "postgres"
