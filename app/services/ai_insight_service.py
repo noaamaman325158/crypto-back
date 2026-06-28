@@ -63,18 +63,20 @@ class AIInsightService:
                 None,
                 partial(self._generate_insight, coin_id, prices),
             )
+        # Full upstream detail is logged server-side; the client only receives a
+        # generic message so we don't leak provider config/quota/topology hints.
         except anthropic.AuthenticationError as e:
             logger.error("ai_insight_auth_error", coin_id=coin_id, error=str(e))
-            raise ExternalServiceError(f"Anthropic authentication failed: {e}") from e
+            raise ExternalServiceError("AI insight service is temporarily unavailable") from e
         except anthropic.RateLimitError as e:
             logger.warning("ai_insight_rate_limited", coin_id=coin_id)
-            raise ExternalServiceError("Anthropic rate limit exceeded — try again later") from e
+            raise ExternalServiceError("AI insight service is busy — please try again later") from e
         except anthropic.APIConnectionError as e:
             logger.error("ai_insight_connection_error", coin_id=coin_id, error=str(e))
-            raise ExternalServiceError(f"Anthropic unreachable: {e}") from e
+            raise ExternalServiceError("AI insight service is temporarily unavailable") from e
         except anthropic.APIError as e:
             logger.error("ai_insight_api_error", coin_id=coin_id, error=str(e))
-            raise ExternalServiceError(f"Anthropic API error: {e}") from e
+            raise ExternalServiceError("AI insight service is temporarily unavailable") from e
 
     def _generate_insight(self, coin_id: str, prices: list[dict]) -> str:
         sample = prices[-30:]

@@ -29,7 +29,11 @@ _background_tasks: set[asyncio.Task] = set()
 
 
 def get_crypto_service(db: AsyncSession = Depends(get_db)) -> CryptoService:
-    return CryptoService(CryptoRepository(db), get_crypto_provider())
+    # Read endpoints never call CoinGecko, so no provider is constructed here —
+    # this avoids creating (and leaking) an httpx.AsyncClient on every read.
+    # The /refresh write path builds its own service with a provider in its
+    # background task below.
+    return CryptoService(CryptoRepository(db))
 
 
 @router.get("", response_model=PaginatedCoinsResponse)
@@ -85,6 +89,12 @@ async def refresh_cryptocurrencies(
     if cached:
         return Response(status_code=202)
 
+    # Store a "pending" marker BEFORE returning so concurrent duplicate requests
+    # are still deduplicated while the work runs. The background task then updates
+    # the marker to "completed" or "failed", so the recorded state reflects the
+    # actual outcome (a failed refresh doesn't masquerade as a successful one).
+    await store_idempotency(idempotency_key, {"status": "pending"}, ttl=30)
+
     async def _run() -> None:
         # Open a fresh DB session and provider for the background task. The
         # request-scoped `service` is closed by get_db() the moment this handler
@@ -100,11 +110,13 @@ async def refresh_cryptocurrencies(
                     await provider.aclose()
         except Exception as e:
             logger.error("async_refresh_failed", error=str(e))
+            await store_idempotency(idempotency_key, {"status": "failed"}, ttl=30)
+        else:
+            await store_idempotency(idempotency_key, {"status": "completed"}, ttl=30)
 
     task = asyncio.create_task(_run())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
-    await store_idempotency(idempotency_key, {"scheduled": True}, ttl=30)
     return Response(status_code=202)
 
 

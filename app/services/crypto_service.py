@@ -18,8 +18,11 @@ logger = get_logger(__name__)
 
 
 class CryptoService:
-    def __init__(self, repo: CryptoRepository, provider: CryptoProvider) -> None:
+    def __init__(self, repo: CryptoRepository, provider: CryptoProvider | None = None) -> None:
         self.repo = repo
+        # provider is only needed by refresh() (the write path). Read endpoints
+        # pass provider=None so they don't construct an httpx client they never
+        # use (and never close) — avoiding connection/fd leaks under load.
         self.provider = provider
 
     async def get_all(self, page: int, per_page: int, sort_by: str):
@@ -66,6 +69,8 @@ class CryptoService:
     async def refresh(self) -> int:
         """On-demand refresh triggered via the internal API endpoint.
         In the push model this is a privileged escape hatch, not the primary path."""
+        if self.provider is None:
+            raise RuntimeError("CryptoService.refresh() requires a provider")
         coin_refresh_total.inc()
         logger.info("coin_refresh_started")
         raw = await self.provider.fetch_markets(per_page=100)
