@@ -73,7 +73,7 @@ class TestAuthValidation:
     async def test_register_response_contract(self, client: AsyncClient):
         """Register response must include all required fields with correct types."""
         resp = await client.post("/api/v1/auth/register", json={
-            "email": "contract@test.com", "password": "pass123"
+            "email": "contract@test.com", "password": "password123"
         })
         assert resp.status_code == 201
         body = resp.json()
@@ -88,10 +88,10 @@ class TestAuthValidation:
     async def test_login_response_contract(self, client: AsyncClient):
         """Login response must include access_token, refresh_token, token_type."""
         await client.post("/api/v1/auth/register", json={
-            "email": "login_contract@test.com", "password": "pass123"
+            "email": "login_contract@test.com", "password": "password123"
         })
         resp = await client.post("/api/v1/auth/login", json={
-            "email": "login_contract@test.com", "password": "pass123"
+            "email": "login_contract@test.com", "password": "password123"
         })
         assert resp.status_code == 200
         body = resp.json()
@@ -391,12 +391,15 @@ class TestHealthEndpoint:
         """When a dependency is unreachable, /health must return 503 + degraded."""
         from unittest.mock import patch
 
-        with patch("app.db.database.AsyncSessionLocal", side_effect=RuntimeError("db down")):
+        with patch("app.db.database.AsyncSessionLocal", side_effect=RuntimeError("db down secret host")):
             resp = await client.get("/health")
         assert resp.status_code == 503
         body = resp.json()
         assert body["status"] == "degraded"
         assert body["checks"]["database"]["status"] == "error"
+        # Raw upstream error must NOT leak to unauthenticated callers.
+        assert body["checks"]["database"]["error"] == "unavailable"
+        assert "secret host" not in resp.text
 
     @pytest.mark.asyncio
     async def test_health_no_auth_required(self, client: AsyncClient):

@@ -17,7 +17,7 @@ async def test_register(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_register_duplicate_email(client: AsyncClient):
-    payload = {"email": "dup@example.com", "password": "pass"}
+    payload = {"email": "dup@example.com", "password": "password123"}
     await client.post("/api/v1/auth/register", json=payload)
     resp = await client.post("/api/v1/auth/register", json=payload)
     assert resp.status_code == 409

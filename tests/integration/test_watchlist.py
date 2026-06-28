@@ -10,8 +10,8 @@ MOCK_MARKETS = [{
 
 
 async def register_and_login(client: AsyncClient, email: str) -> str:
-    await client.post("/api/v1/auth/register", json={"email": email, "password": "pass"})
-    resp = await client.post("/api/v1/auth/login", json={"email": email, "password": "pass"})
+    await client.post("/api/v1/auth/register", json={"email": email, "password": "password123"})
+    resp = await client.post("/api/v1/auth/login", json={"email": email, "password": "password123"})
     return resp.json()["access_token"]
 
 
