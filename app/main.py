@@ -37,7 +37,13 @@ async def lifespan(app: FastAPI):
         await loop.run_in_executor(None, _migrate)
         logger.info("alembic_migrations_applied")
     except Exception as e:
-        logger.warning("alembic_migration_failed", error=str(e))
+        # Fail fast in production: a task that can't migrate must NOT serve
+        # traffic against a stale schema (runtime SQL errors / data corruption).
+        # In local/dev we log and continue so the app is still usable while a
+        # developer fixes the migration.
+        logger.error("alembic_migration_failed", error=str(e))
+        if settings.environment == "production":
+            raise
 
     # Start gRPC server in background alongside FastAPI (REST :8000, gRPC :50051).
     # Same process, two transports — mirrors the Dataminr agentic-search pattern.
@@ -76,7 +82,7 @@ app.add_middleware(
     allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "Idempotency-Key"],
 )
 
 app.include_router(router)
@@ -114,7 +120,10 @@ async def health(response: Response):
             "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
         }
     except Exception as e:
-        checks["database"] = {"status": "error", "error": str(e)}
+        # Log the real error server-side; expose only a generic status so an
+        # unauthenticated caller can't learn hostnames / auth-failure details.
+        logger.error("health_db_check_failed", error=str(e))
+        checks["database"] = {"status": "error", "error": "unavailable"}
 
     # Redis check
     try:
@@ -126,7 +135,8 @@ async def health(response: Response):
             "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
         }
     except Exception as e:
-        checks["redis"] = {"status": "error", "error": str(e)}
+        logger.error("health_redis_check_failed", error=str(e))
+        checks["redis"] = {"status": "error", "error": "unavailable"}
 
     healthy = all(c["status"] == "ok" for c in checks.values())
     if not healthy:
