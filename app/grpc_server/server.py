@@ -5,6 +5,7 @@ from grpc_reflection.v1alpha import reflection
 
 from app.core.logging import get_logger
 from app.grpc_generated.crypto.insight.v1 import insight_pb2, insight_pb2_grpc
+from app.grpc_server.auth_interceptor import JWTAuthInterceptor
 from app.grpc_server.insight_servicer import InsightServicer
 
 logger = get_logger(__name__)
@@ -26,7 +27,10 @@ async def serve() -> None:
       grpcurl -plaintext localhost:50051 list
       grpcurl -plaintext localhost:50051 crypto.insight.v1.InsightService/GetInsight
     """
-    server = grpc.aio.server()
+    # JWT interceptor enforces the same Bearer access token as the REST insight
+    # endpoint — the gRPC transport must not be an unauthenticated path to the
+    # paid Anthropic-backed logic. Reflection stays open for tooling.
+    server = grpc.aio.server(interceptors=(JWTAuthInterceptor(),))
 
     insight_pb2_grpc.add_InsightServiceServicer_to_server(InsightServicer(), server)
 
@@ -38,6 +42,11 @@ async def serve() -> None:
     )
     reflection.enable_server_reflection(service_names, server)
 
+    # NOTE: insecure (plaintext) port is acceptable for local/dev only. In
+    # non-local environments use server.add_secure_port() with TLS credentials,
+    # and keep :50051 internal (do not expose it publicly in ECS/SG rules) since
+    # it is intended for service-to-service traffic. Auth is enforced regardless
+    # by JWTAuthInterceptor above.
     server.add_insecure_port(f"[::]:{GRPC_PORT}")
     await server.start()
     logger.info("grpc_server_started", port=GRPC_PORT)
