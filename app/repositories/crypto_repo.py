@@ -37,6 +37,21 @@ class CryptoRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_external_ids(
+        self, external_ids: list[str]
+    ) -> dict[str, Cryptocurrency]:
+        """Bulk-fetch coins by external_id, returned as {external_id: coin}.
+
+        Used by the worker's write-through so it can cache by the DB UUID (the
+        key the API actually reads) in a single query rather than N lookups.
+        """
+        if not external_ids:
+            return {}
+        result = await self.db.execute(
+            select(Cryptocurrency).where(Cryptocurrency.external_id.in_(external_ids))
+        )
+        return {c.external_id: c for c in result.scalars().all()}
+
     async def get_top_movers(self, limit: int = 5) -> tuple[list[Cryptocurrency], list[Cryptocurrency]]:
         """Returns (gainers, losers) sorted by 24h price change, excluding nulls."""
         base = (

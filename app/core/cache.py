@@ -38,10 +38,18 @@ async def cache_delete(key: str) -> None:
 
 
 async def cache_delete_pattern(pattern: str) -> None:
+    # SCAN (cursor iteration) instead of KEYS: KEYS is O(N) and blocks the Redis
+    # event loop across the whole keyspace, causing latency spikes at scale.
+    # SCAN walks the keyspace incrementally without blocking.
     r = await get_redis()
-    keys = await r.keys(pattern)
-    if keys:
-        await r.delete(*keys)
+    batch: list[str] = []
+    async for key in r.scan_iter(match=pattern, count=100):
+        batch.append(key)
+        if len(batch) >= 100:
+            await r.delete(*batch)
+            batch = []
+    if batch:
+        await r.delete(*batch)
 
 
 async def cache_get_or_set(

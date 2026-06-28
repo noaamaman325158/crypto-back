@@ -100,11 +100,20 @@ async def _fetch_and_store_page(
 
     await db.commit()
 
-    # Write-through: populate Redis with fresh values so API reads don't hit DB
+    # Write-through: populate Redis so API reads don't hit DB.
+    #
+    # The API's GET /cryptocurrencies/{id} reads `coins:detail:<uuid>`, so the
+    # write-through MUST key by the DB UUID (not the CoinGecko external_id) or it
+    # would never serve a single detail read. Look up the freshly-upserted rows
+    # by external_id in one query to recover their UUIDs.
     import json
+    db_coins = await repo.get_by_external_ids([c["id"] for c in raw])
     for c in raw:
+        db_coin = db_coins.get(c["id"])
+        if db_coin is None:
+            continue
         coin_dict = {
-            "id": None,  # will be filled by repo on next DB read if needed
+            "id": str(db_coin.id),
             "external_id": c["id"],
             "name": c["name"],
             "symbol": c["symbol"],
@@ -116,21 +125,31 @@ async def _fetch_and_store_page(
             "last_updated_at": now.isoformat(),
             "data_age_seconds": 0,
         }
-        await redis.setex(
-            f"coins:detail:{c['id']}",
-            CACHE_TTL,
-            json.dumps(coin_dict),
-        )
+        payload = json.dumps(coin_dict)
+        # Primary key the API reads (by UUID), plus an external_id alias for
+        # callers/tools that look coins up by their CoinGecko id.
+        await redis.setex(f"coins:detail:{db_coin.id}", CACHE_TTL, payload)
+        await redis.setex(f"coins:detail:ext:{c['id']}", CACHE_TTL, payload)
 
-    # Invalidate list/top-mover caches — they'll repopulate from fresh DB data
-    keys = await redis.keys("coins:list:*")
-    if keys:
-        await redis.delete(*keys)
-    keys = await redis.keys("coins:top_movers:*")
-    if keys:
-        await redis.delete(*keys)
+    # Invalidate list/top-mover caches — they'll repopulate from fresh DB data.
+    # Use SCAN (non-blocking) rather than KEYS (O(N), blocks Redis) since this
+    # runs on every refresh cycle.
+    await _scan_delete(redis, "coins:list:*")
+    await _scan_delete(redis, "coins:top_movers:*")
 
     return count
+
+
+async def _scan_delete(redis: aioredis.Redis, pattern: str) -> None:
+    """Delete all keys matching pattern using non-blocking SCAN iteration."""
+    batch: list[str] = []
+    async for key in redis.scan_iter(match=pattern, count=100):
+        batch.append(key)
+        if len(batch) >= 100:
+            await redis.delete(*batch)
+            batch = []
+    if batch:
+        await redis.delete(*batch)
 
 
 async def _run_refresh() -> None:
